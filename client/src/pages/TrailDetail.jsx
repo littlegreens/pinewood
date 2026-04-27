@@ -56,6 +56,17 @@ const QUILL_MODULES = {
 };
 const QUILL_FORMATS = ["bold", "italic", "underline", "link", "list", "bullet"];
 
+function readStoredUser() {
+  const raw = localStorage.getItem("pinewood_user");
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    localStorage.removeItem("pinewood_user");
+    return null;
+  }
+}
+
 function lon2tile(lon, zoom) {
   return Math.floor(((lon + 180) / 360) * 2 ** zoom);
 }
@@ -147,6 +158,7 @@ export default function TrailDetail() {
     elevation_loss_m: "",
     max_elevation_m: "",
     min_elevation_m: "",
+    source_website_url: "",
     is_public: true,
   });
   const [parkingData, setParkingData] = useState({
@@ -169,6 +181,8 @@ export default function TrailDetail() {
   const [shareOpen, setShareOpen] = useState(false);
   const [shareNotice, setShareNotice] = useState("");
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+  const [aiGenerating, setAiGenerating] = useState(false);
+  const [me, setMe] = useState(() => readStoredUser());
 
   function resolveBackTarget() {
     const raw = location.state?.backTo;
@@ -216,6 +230,7 @@ export default function TrailDetail() {
   useEffect(() => {
     function syncAuthState() {
       setIsGuest(!localStorage.getItem("pinewood_access_token"));
+      setMe(readStoredUser());
     }
     function onAuthExpired(event) {
       const message = event?.detail?.message || t(lang, "sessionExpired");
@@ -312,6 +327,7 @@ export default function TrailDetail() {
       elevation_loss_m: trail.elevation_loss_m ?? "",
       max_elevation_m: trail.max_elevation_m ?? "",
       min_elevation_m: trail.min_elevation_m ?? "",
+      source_website_url: trail.source_website_url || "",
       is_public: trail.is_public ?? true,
     });
     setEditOpen(true);
@@ -486,6 +502,7 @@ export default function TrailDetail() {
             editData.max_elevation_m === "" ? null : Number(editData.max_elevation_m),
           min_elevation_m:
             editData.min_elevation_m === "" ? null : Number(editData.min_elevation_m),
+          source_website_url: (editData.source_website_url || "").trim() || null,
           is_public: editData.is_public,
         };
 
@@ -501,6 +518,35 @@ export default function TrailDetail() {
       setTrail(data);
     }
     setEditOpen(false);
+  }
+
+  async function generateDescriptionAi() {
+    if (!trail?.id || me?.role !== "super_admin" || !trail?.is_mine) return;
+    setAiGenerating(true);
+    try {
+      const res = await apiFetch(`/api/trails/${trail.id}/generate-description-ai`, {
+        method: "POST",
+      });
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setPlayAlert({ type: "error", text: payload?.error || t(lang, "genericError") });
+        return;
+      }
+      const reload = await apiFetch(`/api/trails/${trail.id}`);
+      if (reload.ok) {
+        const data = await reload.json();
+        setTrail(data);
+        setEditData((prev) => ({ ...prev, description: data.description || "" }));
+      }
+      if (!payload?.ok) {
+        setPlayAlert({
+          type: "warning",
+          text: `AI: ${payload?.reason || "generazione non applicata"}`,
+        });
+      }
+    } finally {
+      setAiGenerating(false);
+    }
   }
 
   async function deleteCurrentTrail() {
@@ -878,6 +924,22 @@ export default function TrailDetail() {
                   <strong>{t(lang, "startPoint")}:</strong> {trail.start_location_text}
                 </Typography>
               )}
+              {trail.source_website_url && (
+                <Typography sx={{ color: "#2f2f2f" }}>
+                  <strong>{t(lang, "officialSource")}:</strong>{" "}
+                  <a
+                    href={
+                      String(trail.source_website_url).startsWith("http")
+                        ? trail.source_website_url
+                        : `https://${trail.source_website_url}`
+                    }
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    {t(lang, "officialSourceLink")}
+                  </a>
+                </Typography>
+              )}
               {(trail.start_location_lat != null && trail.start_location_lon != null) && (
                 <Button
                   variant="text"
@@ -1097,7 +1159,20 @@ export default function TrailDetail() {
                   modules={QUILL_MODULES}
                   formats={QUILL_FORMATS}
                 />
+                {trail.is_mine && me?.role === "super_admin" && (
+                  <Box sx={{ mt: 1 }}>
+                    <Button size="small" variant="outlined" onClick={generateDescriptionAi} disabled={aiGenerating}>
+                      {aiGenerating ? t(lang, "wait") : t(lang, "generateAiDescription")}
+                    </Button>
+                  </Box>
+                )}
               </Box>
+              <TextField
+                label={t(lang, "officialWebsite")}
+                value={editData.source_website_url}
+                onChange={(e) => setEditData((v) => ({ ...v, source_website_url: e.target.value }))}
+                fullWidth
+              />
               <TextField
                 label={t(lang, "difficulty")}
                 value={editData.difficulty}

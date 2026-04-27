@@ -12,11 +12,22 @@ import {
   getUploadsRoot,
   resolveUploadAbsolutePath,
 } from "../services/fileStorage.js";
+import {
+  enrichTrailDescriptionWithGemini,
+  scheduleTrailDescriptionEnrichment,
+} from "../services/trailAiEnrichment.js";
 
 const router = Router();
 
 async function ensureTrailVisibilityDefaults() {
   await pool.query(`ALTER TABLE trails ALTER COLUMN is_public SET DEFAULT true`);
+}
+
+async function ensureTrailSourceWebsiteColumn() {
+  await pool.query(
+    `ALTER TABLE trails
+     ADD COLUMN IF NOT EXISTS source_website_url varchar(500)`
+  );
 }
 
 router.get("/", authMiddleware, async (req, res) => {
@@ -181,6 +192,10 @@ router.post("/upload", authMiddleware, upload.single("file"), async (req, res) =
       }
     );
 
+    if (req.user.role === "super_admin" && !(initialDescription || "").trim()) {
+      scheduleTrailDescriptionEnrichment(result.rows[0].id);
+    }
+
     return res.status(201).json({ trailId: result.rows[0].id, status: result.rows[0].parse_status });
   } catch (error) {
     return res.status(400).json({ error: error.message || "Errore parsing GPX" });
@@ -224,6 +239,7 @@ router.get("/:id", optionalAuthMiddleware, async (req, res) => {
         t.id,
         t.name,
         t.description,
+        t.source_website_url,
         t.distance_km,
         t.difficulty,
         t.svg_preview,
@@ -299,7 +315,10 @@ router.patch("/:id", authMiddleware, async (req, res) => {
     max_elevation_m,
     min_elevation_m,
     is_public,
+    source_website_url,
   } = req.body ?? {};
+  await ensureTrailSourceWebsiteColumn();
+
 
   const trailCheck = await pool.query(
     `SELECT id, source, user_id
@@ -324,9 +343,17 @@ router.patch("/:id", authMiddleware, async (req, res) => {
        SET start_location_text = COALESCE($2, start_location_text),
            start_location_lat = COALESCE($3, start_location_lat),
            start_location_lon = COALESCE($4, start_location_lon),
-           is_public = CASE WHEN $5::boolean IS NULL THEN is_public ELSE $5::boolean END
+           source_website_url = COALESCE($5, source_website_url),
+           is_public = CASE WHEN $6::boolean IS NULL THEN is_public ELSE $6::boolean END
        WHERE id = $1`,
-      [req.params.id, start_location_text, start_location_lat, start_location_lon, is_public]
+      [
+        req.params.id,
+        start_location_text,
+        start_location_lat,
+        start_location_lon,
+        source_website_url,
+        is_public,
+      ]
     );
     return res.json({ ok: true });
   }
@@ -344,7 +371,8 @@ router.patch("/:id", authMiddleware, async (req, res) => {
          elevation_loss_m = COALESCE($10, elevation_loss_m),
          max_elevation_m = COALESCE($11, max_elevation_m),
          min_elevation_m = COALESCE($12, min_elevation_m),
-         is_public = CASE WHEN $13::boolean IS NULL THEN is_public ELSE $13::boolean END
+         is_public = CASE WHEN $13::boolean IS NULL THEN is_public ELSE $13::boolean END,
+         source_website_url = COALESCE($14, source_website_url)
      WHERE id = $1`,
     [
       req.params.id,
@@ -360,9 +388,36 @@ router.patch("/:id", authMiddleware, async (req, res) => {
       max_elevation_m,
       min_elevation_m,
       is_public,
+      source_website_url,
     ]
   );
   return res.json({ ok: true });
+});
+
+router.post("/:id/generate-description-ai", authMiddleware, async (req, res) => {
+  const trailRes = await pool.query(
+    `SELECT id, user_id
+     FROM trails
+     WHERE id = $1
+     LIMIT 1`,
+    [req.params.id]
+  );
+  const trail = trailRes.rows[0];
+  if (!trail) {
+    return res.status(404).json({ error: "Trail non trovato" });
+  }
+  if (trail.user_id !== req.user.id) {
+    return res.status(403).json({ error: "Non autorizzato" });
+  }
+  if (req.user.role !== "super_admin") {
+    return res.status(403).json({ error: "Accesso riservato al super admin" });
+  }
+
+  const out = await enrichTrailDescriptionWithGemini(req.params.id, { force: true });
+  if (out.error) {
+    return res.status(502).json({ error: `Generazione AI fallita: ${out.error}` });
+  }
+  return res.json(out);
 });
 
 router.delete("/:id", authMiddleware, async (req, res) => {

@@ -5,3 +5,4 @@ dist
 server/uploads/*
 !server/uploads/.gitkeep
 .DS_Store
+.prod-snapshot/

@@ -98,6 +98,7 @@ export default function MyTrails() {
     elevation_loss_m: "",
     max_elevation_m: "",
     min_elevation_m: "",
+    source_website_url: "",
     is_public: true,
     parkings: [],
   });
@@ -109,6 +110,7 @@ export default function MyTrails() {
   });
   const [editingParkingId, setEditingParkingId] = useState(null);
   const [uploadDialogOpen, setUploadDialogOpen] = useState(false);
+  const [aiGenerating, setAiGenerating] = useState(false);
 
   const [me, setMe] = useState(() => {
     return readStoredUser();
@@ -267,6 +269,7 @@ export default function MyTrails() {
       elevation_loss_m: trail.elevation_loss_m ?? "",
       max_elevation_m: trail.max_elevation_m ?? "",
       min_elevation_m: trail.min_elevation_m ?? "",
+      source_website_url: trail.source_website_url || "",
       is_public: trail.is_public ?? true,
       parkings: Array.isArray(trail.parkings) ? trail.parkings : [],
     });
@@ -295,6 +298,7 @@ export default function MyTrails() {
           elevation_loss_m: editData.elevation_loss_m === "" ? null : Number(editData.elevation_loss_m),
           max_elevation_m: editData.max_elevation_m === "" ? null : Number(editData.max_elevation_m),
           min_elevation_m: editData.min_elevation_m === "" ? null : Number(editData.min_elevation_m),
+          source_website_url: (editData.source_website_url || "").trim() || null,
           is_public: editData.is_public,
         };
     const response = await apiFetch(`/api/trails/${editData.id}`, {
@@ -309,6 +313,35 @@ export default function MyTrails() {
     setEditOpen(false);
     setNotice({ type: "success", text: t(lang, "trailUpdated") });
     await loadTrails();
+  }
+
+  async function generateDescriptionAiForEdit() {
+    if (!editData.id || me?.role !== "super_admin") return;
+    setAiGenerating(true);
+    try {
+      const res = await apiFetch(`/api/trails/${editData.id}/generate-description-ai`, {
+        method: "POST",
+      });
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setNotice({ type: "error", text: payload?.error || t(lang, "genericError") });
+        return;
+      }
+      const reload = await apiFetch(`/api/trails/${editData.id}`);
+      if (reload.ok) {
+        const trail = await reload.json();
+        setEditData((prev) => ({
+          ...prev,
+          description: trail.description || "",
+          source_website_url: trail.source_website_url || prev.source_website_url,
+        }));
+      }
+      if (!payload?.ok) {
+        setNotice({ type: "error", text: `AI: ${payload?.reason || "generazione non applicata"}` });
+      }
+    } finally {
+      setAiGenerating(false);
+    }
   }
 
   function startEditParking(parking) {
@@ -696,7 +729,25 @@ export default function MyTrails() {
                   modules={QUILL_MODULES}
                   formats={QUILL_FORMATS}
                 />
+                {me?.role === "super_admin" && (
+                  <Box sx={{ mt: 1 }}>
+                    <Button
+                      size="small"
+                      variant="outlined"
+                      onClick={generateDescriptionAiForEdit}
+                      disabled={aiGenerating}
+                    >
+                      {aiGenerating ? t(lang, "wait") : t(lang, "generateAiDescription")}
+                    </Button>
+                  </Box>
+                )}
               </Box>
+              <TextField
+                label={t(lang, "officialWebsite")}
+                value={editData.source_website_url}
+                onChange={(e) => setEditData((v) => ({ ...v, source_website_url: e.target.value }))}
+                fullWidth
+              />
               <TextField
                 label={t(lang, "difficulty")}
                 value={editData.difficulty}

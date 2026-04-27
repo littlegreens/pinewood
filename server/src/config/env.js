@@ -26,4 +26,7 @@ export const env = {
    * "eudem25m,srtm30m" (EU-DEM prima, poi SRTM fuori EU / nodata). Non esiste "srtm1" sulla API pubblica.
    */
   opentopoDataset: process.env.OPENTOPO_DATASET || "eudem25m,srtm30m",
+  /** Opzionale: se assente, l'arricchimento descrizione (solo super_admin) viene saltato */
+  geminiApiKey: process.env.GEMINI_API_KEY || "",
+  geminiModel: process.env.GEMINI_MODEL || "gemini-2.0-flash",
 };
