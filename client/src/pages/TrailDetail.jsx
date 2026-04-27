@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
   Avatar,
@@ -183,6 +183,7 @@ export default function TrailDetail() {
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [aiGenerating, setAiGenerating] = useState(false);
   const [me, setMe] = useState(() => readStoredUser());
+  const renderedDescriptionRef = useRef(null);
 
   function resolveBackTarget() {
     const raw = location.state?.backTo;
@@ -252,6 +253,13 @@ export default function TrailDetail() {
       const res = await apiFetch(`/api/trails/${trailId}`);
       if (!res.ok) return;
       const data = await res.json();
+      const rawDescription = String(data?.description || "");
+      console.info("[trail.debug] API description", {
+        trailId,
+        chars: rawDescription.length,
+        preview: rawDescription.slice(0, 240),
+        tail: rawDescription.slice(-140),
+      });
       if (active) setTrail(data);
     }
     load();
@@ -259,6 +267,19 @@ export default function TrailDetail() {
       active = false;
     };
   }, [trailId, navigate]);
+
+  useEffect(() => {
+    if (!trail) return;
+    const el = renderedDescriptionRef.current;
+    if (!el) return;
+    const visibleText = String(el.innerText || "").trim();
+    console.info("[trail.debug] Rendered description", {
+      trailId: trail.id,
+      chars: visibleText.length,
+      preview: visibleText.slice(0, 240),
+      tail: visibleText.slice(-140),
+    });
+  }, [trail]);
 
   useEffect(() => {
     if (!trail) return;
@@ -917,7 +938,9 @@ export default function TrailDetail() {
         <Stack spacing={2}>
           <Box sx={{ px: 1.5, py: 0.8 }}>
             <Stack spacing={1.1}>
-              {trail.description && renderDescriptionContent(trail.description)}
+              {trail.description && (
+                <Box ref={renderedDescriptionRef}>{renderDescriptionContent(trail.description)}</Box>
+              )}
 
               {trail.start_location_text && (
                 <Typography sx={{ color: "#2f2f2f" }}>

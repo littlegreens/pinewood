@@ -13,6 +13,35 @@ function extractGeminiText(data) {
   return parts.map((p) => p.text || "").join("").trim();
 }
 
+function looksTruncated(text) {
+  const out = String(text || "").trim();
+  if (!out) return true;
+  if (out.length < 900) return true;
+  return !/[.!?…]["')\]]?\s*$/.test(out);
+}
+
+async function callGemini(prompt, { temperature = 0.65, maxOutputTokens = 3072 } = {}) {
+  const response = await fetch(GEMINI_URL(env.geminiModel, env.geminiApiKey), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      contents: [{ role: "user", parts: [{ text: prompt }] }],
+      generationConfig: {
+        temperature,
+        maxOutputTokens,
+      },
+    }),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const msg = data?.error?.message || response.statusText || "Gemini request failed";
+    return { error: msg };
+  }
+  const text = extractGeminiText(data);
+  if (!text) return { error: "empty_gemini_response" };
+  return { text };
+}
+
 function buildPrompt(row) {
   const bits = [
     `Nome percorso: ${row.name}`,
@@ -81,29 +110,19 @@ export async function enrichTrailDescriptionWithGemini(trailId, options = {}) {
   }
 
   const prompt = buildPrompt(row);
-  const response = await fetch(GEMINI_URL(env.geminiModel, env.geminiApiKey), {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      contents: [{ role: "user", parts: [{ text: prompt }] }],
-      generationConfig: {
-        temperature: 0.65,
-        maxOutputTokens: 2048,
-      },
-    }),
-  });
-
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    const msg = data?.error?.message || response.statusText || "Gemini request failed";
-    console.error("[trailAiEnrichment] API error", trailId, msg);
-    return { error: msg };
+  const first = await callGemini(prompt);
+  if (first.error) {
+    console.error("[trailAiEnrichment] API error", trailId, first.error);
+    return { error: first.error };
   }
-
-  const text = extractGeminiText(data);
-  if (!text) {
-    console.error("[trailAiEnrichment] empty response", trailId, JSON.stringify(data).slice(0, 500));
-    return { error: "empty_gemini_response" };
+  let text = first.text;
+  if (looksTruncated(text)) {
+    const retryPrompt = `${prompt}\n\nAttenzione: nel tentativo precedente la descrizione è risultata troncata o troppo breve. 
+Riscrivi da zero un testo completo, concluso, tra 1000 e 1500 caratteri, con frase finale chiusa.`;
+    const second = await callGemini(retryPrompt, { temperature: 0.55, maxOutputTokens: 3584 });
+    if (!second.error && !looksTruncated(second.text)) {
+      text = second.text;
+    }
   }
 
   const upd = await pool.query(
