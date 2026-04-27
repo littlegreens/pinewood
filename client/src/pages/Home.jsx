@@ -51,6 +51,8 @@ export default function Home() {
   const [locationResolved, setLocationResolved] = useState(false);
   const [isGuest, setIsGuest] = useState(() => !localStorage.getItem("pinewood_access_token"));
   const [heroBackground, setHeroBackground] = useState("");
+  const [nearIndex, setNearIndex] = useState(0);
+  const [nearTouchStartX, setNearTouchStartX] = useState(null);
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
 
   const [me, setMe] = useState(() => {
@@ -214,8 +216,9 @@ export default function Home() {
 
   useEffect(() => {
     if (!items.length) return;
+    setNearIndex((idx) => (nearest.length ? Math.min(idx, nearest.length - 1) : 0));
     setVisibleCount(PAGE_SIZE);
-  }, [items]);
+  }, [items, nearest.length]);
 
   function formatMinutesToHours(minutes) {
     if (!Number.isFinite(minutes)) return null;
@@ -225,7 +228,8 @@ export default function Home() {
     return `${h} h ${m} min`;
   }
 
-  function renderTrailCard(trail) {
+  function renderTrailCard(trail, options = {}) {
+    const fixedHeight = Boolean(options.fixedHeight);
     const ownerLabel = trail.owner_name || "User";
     const ownerInitial = ownerLabel.slice(0, 1).toUpperCase();
     const meAvatarSrc = me?.avatar_url ? `${API}${me.avatar_url}` : undefined;
@@ -235,7 +239,13 @@ export default function Home() {
       <Card
         key={trail.id}
         variant="outlined"
-        sx={{ overflow: "hidden", cursor: "pointer" }}
+        sx={{
+          overflow: "hidden",
+          cursor: "pointer",
+          height: fixedHeight ? 378 : "auto",
+          display: "flex",
+          flexDirection: "column",
+        }}
         onClick={() => navigate(`/app/trails/${trail.id}`, { state: { backTo: "/app" } })}
       >
         <Box sx={{ width: "100%", lineHeight: 0, position: "relative" }}>
@@ -264,7 +274,7 @@ export default function Home() {
           )}
           <Box dangerouslySetInnerHTML={{ __html: trail.svg_preview }} />
         </Box>
-        <CardContent sx={{ display: "grid", gap: 1.1, p: 1.6 }}>
+        <CardContent sx={{ display: "grid", gap: 1.1, p: 1.6, flex: 1 }}>
           <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 1 }}>
             <Typography sx={{ fontWeight: 700, lineHeight: 1.2 }}>{trail.name}</Typography>
             <Stack direction="row" spacing={0.4} sx={{ alignItems: "center" }}>
@@ -326,6 +336,22 @@ export default function Home() {
     );
   }
 
+  function onNearTouchStart(event) {
+    const x = event.touches?.[0]?.clientX;
+    setNearTouchStartX(Number.isFinite(x) ? x : null);
+  }
+
+  function onNearTouchEnd(event) {
+    if (nearTouchStartX == null) return;
+    const x = event.changedTouches?.[0]?.clientX;
+    if (!Number.isFinite(x)) return;
+    const delta = x - nearTouchStartX;
+    setNearTouchStartX(null);
+    if (Math.abs(delta) < 35) return;
+    if (delta < 0) setNearIndex((v) => Math.min(nearest.length - 1, v + 1));
+    else setNearIndex((v) => Math.max(0, v - 1));
+  }
+
   return (
     <Box
       sx={{
@@ -375,41 +401,63 @@ export default function Home() {
         <Stack spacing={2}>
           <Typography
             sx={{
-              fontFamily: '"Titillium Web", sans-serif',
-              color: "#1f2a22",
+              fontFamily: '"Shadows Into Light Two", cursive !important',
+              color: "#111",
+              fontSize: "1.5rem !important",
               lineHeight: 1.6,
             }}
           >
             Pinewood nasce per chi cammina davvero, senza filtri e senza rumore. Keep the way significa restare sul
-            percorso, ma anche restare fedeli al proprio ritmo: partire, orientarsi, ascoltare il territorio. Qui i
-            trail non sono vetrina: sono strumenti concreti per vivere meglio ogni uscita, con dati chiari, mappe
-            essenziali e una community che condivide esperienza reale. Il mood è semplice: natura, presenza, direzione.
-            Meno distrazioni, più sentiero. Che tu sia in allenamento, in esplorazione o in una giornata lenta,
+            percorso, il mood è semplice: natura, presenza, direzione. Meno distrazioni, più sentiero.
+            <br />
+            <br />
             Pinewood ti accompagna dove serve davvero: fuori, passo dopo passo, con testa leggera e sguardo aperto.
             Keep the way. Sempre.
           </Typography>
 
           {nearest.length > 0 && (
             <Stack spacing={1}>
-              <Typography sx={{ fontWeight: 700 }}>Vicino a te</Typography>
+              <Typography variant="h6" sx={{ fontWeight: 700 }}>
+                I più vicini
+              </Typography>
               <Box
+                onTouchStart={onNearTouchStart}
+                onTouchEnd={onNearTouchEnd}
                 sx={{
-                  display: "flex",
-                  gap: 1.2,
-                  overflowX: "auto",
-                  pb: 0.4,
-                  scrollSnapType: "x mandatory",
-                  scrollbarWidth: "none",
-                  msOverflowStyle: "none",
-                  "&::-webkit-scrollbar": { display: "none" },
+                  overflow: "hidden",
                 }}
               >
-                {nearest.map((trail) => (
-                  <Box key={`near-${trail.id}`} sx={{ minWidth: "86%", scrollSnapAlign: "start" }}>
-                    {renderTrailCard(trail)}
-                  </Box>
-                ))}
+                <Box
+                  sx={{
+                    display: "flex",
+                    width: `${nearest.length * 100}%`,
+                    transform: `translateX(-${nearIndex * (100 / nearest.length)}%)`,
+                    transition: "transform .28s ease",
+                  }}
+                >
+                  {nearest.map((trail) => (
+                    <Box key={`near-${trail.id}`} sx={{ width: `${100 / nearest.length}%`, px: 0.1 }}>
+                      {renderTrailCard(trail, { fixedHeight: true })}
+                    </Box>
+                  ))}
+                </Box>
               </Box>
+              <Stack direction="row" spacing={0.9} sx={{ justifyContent: "center", pt: 0.2 }}>
+                {nearest.map((_, idx) => (
+                  <Box
+                    key={`dot-${idx}`}
+                    onClick={() => setNearIndex(idx)}
+                    sx={{
+                      width: idx === nearIndex ? 20 : 8,
+                      height: 8,
+                      borderRadius: 999,
+                      bgcolor: idx === nearIndex ? "#2D4F1E" : "rgba(45,79,30,0.25)",
+                      transition: "all .22s ease",
+                      cursor: "pointer",
+                    }}
+                  />
+                ))}
+              </Stack>
             </Stack>
           )}
 
