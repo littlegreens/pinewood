@@ -403,8 +403,9 @@ export default function Home() {
             sx={{
               fontFamily: '"Shadows Into Light Two", cursive !important',
               color: "#111",
-              fontSize: "1.5rem !important",
+              fontSize: "1rem !important",
               lineHeight: 1.6,
+              mt: 0.4,
             }}
           >
             Pinewood nasce per chi cammina davvero, senza filtri e senza rumore. Keep the way significa restare sul
@@ -417,7 +418,7 @@ export default function Home() {
 
           {nearest.length > 0 && (
             <Stack spacing={1}>
-              <Typography variant="h6" sx={{ fontWeight: 700 }}>
+              <Typography variant="h6" sx={{ fontWeight: 700, mt: 1.1 }}>
                 I più vicini
               </Typography>
               <Box
@@ -461,7 +462,7 @@ export default function Home() {
             </Stack>
           )}
 
-          <Typography variant="h6" sx={{ fontWeight: 700, mt: 1 }}>
+          <Typography variant="h6" sx={{ fontWeight: 700, mt: 1.6 }}>
             Tutti i trail
           </Typography>
 
