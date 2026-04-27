@@ -29,4 +29,5 @@ export const env = {
   /** Opzionale: se assente, l'arricchimento descrizione (solo super_admin) viene saltato */
   geminiApiKey: process.env.GEMINI_API_KEY || "",
   geminiModel: process.env.GEMINI_MODEL || "gemini-2.0-flash",
+  trailAiDebug: String(process.env.TRAIL_AI_DEBUG || "false").toLowerCase() === "true",
 };

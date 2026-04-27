@@ -7,6 +7,11 @@ const AI_ENRICHMENT_VERSION = "v2";
 const GEMINI_URL = (model, key) =>
   `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(key)}`;
 
+function debugAi(label, payload) {
+  if (!env.trailAiDebug) return;
+  console.info(`[trailAiEnrichment][debug] ${label}`, payload);
+}
+
 function extractGeminiText(data) {
   const parts = data?.candidates?.[0]?.content?.parts;
   if (!parts?.length) return "";
@@ -39,7 +44,10 @@ async function callGemini(prompt, { temperature = 0.65, maxOutputTokens = 3072 }
   }
   const text = extractGeminiText(data);
   if (!text) return { error: "empty_gemini_response" };
-  return { text };
+  return {
+    text,
+    finishReason: data?.candidates?.[0]?.finishReason || null,
+  };
 }
 
 function buildPrompt(row) {
@@ -110,19 +118,50 @@ export async function enrichTrailDescriptionWithGemini(trailId, options = {}) {
   }
 
   const prompt = buildPrompt(row);
-  const first = await callGemini(prompt);
-  if (first.error) {
-    console.error("[trailAiEnrichment] API error", trailId, first.error);
-    return { error: first.error };
-  }
-  let text = first.text;
-  if (looksTruncated(text)) {
-    const retryPrompt = `${prompt}\n\nAttenzione: nel tentativo precedente la descrizione è risultata troncata o troppo breve. 
-Riscrivi da zero un testo completo, concluso, tra 1000 e 1500 caratteri, con frase finale chiusa.`;
-    const second = await callGemini(retryPrompt, { temperature: 0.55, maxOutputTokens: 3584 });
-    if (!second.error && !looksTruncated(second.text)) {
-      text = second.text;
+  const prompts = [
+    prompt,
+    `${prompt}\n\nAttenzione: nel tentativo precedente la descrizione è risultata troncata o troppo breve.
+Riscrivi da zero un testo completo, concluso, tra 1000 e 1500 caratteri, con frase finale chiusa.`,
+    `${prompt}\n\nProduci un testo completo di 1000-1500 caratteri, senza interrompere frasi.
+Se non riesci a rispettare la lunghezza, rispondi con un errore esplicito invece di troncare.`,
+  ];
+
+  let text = "";
+  let lastReason = "generation_failed";
+  for (let i = 0; i < prompts.length; i += 1) {
+    const out = await callGemini(prompts[i], {
+      temperature: i === 0 ? 0.65 : 0.5,
+      maxOutputTokens: i === 0 ? 3072 : 4096,
+    });
+    if (out.error) {
+      lastReason = out.error;
+      debugAi("attempt_error", { trailId, attempt: i + 1, error: out.error });
+      continue;
     }
+    const candidate = String(out.text || "").trim();
+    debugAi("attempt_output", {
+      trailId,
+      attempt: i + 1,
+      chars: candidate.length,
+      finishReason: out.finishReason || null,
+      fullText: candidate,
+    });
+    if (!looksTruncated(candidate)) {
+      text = candidate;
+      break;
+    }
+    lastReason = `truncated_${out.finishReason || "unknown"}`;
+    console.warn("[trailAiEnrichment] truncated candidate", {
+      trailId,
+      attempt: i + 1,
+      chars: candidate.length,
+      finishReason: out.finishReason || null,
+    });
+  }
+
+  // Fail-safe: non salvare mai descrizioni mozzate.
+  if (!text) {
+    return { error: `invalid_truncated_output:${lastReason}` };
   }
 
   const upd = await pool.query(
@@ -137,6 +176,11 @@ Riscrivi da zero un testo completo, concluso, tra 1000 e 1500 caratteri, con fra
   if (upd.rowCount === 0) {
     return { skipped: true, reason: "description_race_or_manual" };
   }
+  debugAi("saved_description", {
+    trailId,
+    chars: text.length,
+    fullText: text,
+  });
   return { ok: true };
 }
 
