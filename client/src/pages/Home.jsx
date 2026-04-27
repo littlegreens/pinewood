@@ -17,8 +17,6 @@ import {
 import SearchIcon from "@mui/icons-material/Search";
 import NorthRoundedIcon from "@mui/icons-material/NorthRounded";
 import SouthRoundedIcon from "@mui/icons-material/SouthRounded";
-import ChevronLeftRoundedIcon from "@mui/icons-material/ChevronLeftRounded";
-import ChevronRightRoundedIcon from "@mui/icons-material/ChevronRightRounded";
 import { useNavigate } from "react-router-dom";
 import { detectLanguage, t } from "../services/i18n.js";
 import InternalHeader from "../components/InternalHeader.jsx";
@@ -53,9 +51,7 @@ export default function Home() {
   const [locationResolved, setLocationResolved] = useState(false);
   const [isGuest, setIsGuest] = useState(() => !localStorage.getItem("pinewood_access_token"));
   const [heroBackground, setHeroBackground] = useState("");
-  const [nearIndex, setNearIndex] = useState(0);
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
-  const [randomTrailId, setRandomTrailId] = useState(null);
 
   const [me, setMe] = useState(() => {
     const raw = localStorage.getItem("pinewood_user");
@@ -216,20 +212,10 @@ export default function Home() {
 
   const popularVisible = useMemo(() => popular.slice(0, visibleCount), [popular, visibleCount]);
 
-  const randomTrail = useMemo(() => {
-    if (!items.length) return null;
-    if (randomTrailId) return items.find((t) => t.id === randomTrailId) || items[0];
-    return items[0];
-  }, [items, randomTrailId]);
-
   useEffect(() => {
     if (!items.length) return;
-    setNearIndex((idx) => (nearest.length ? Math.min(idx, nearest.length - 1) : 0));
     setVisibleCount(PAGE_SIZE);
-    if (randomTrailId && items.some((t) => t.id === randomTrailId)) return;
-    const candidate = items[Math.floor(Math.random() * items.length)];
-    setRandomTrailId(candidate?.id || null);
-  }, [items, nearest.length, randomTrailId]);
+  }, [items]);
 
   function formatMinutesToHours(minutes) {
     if (!Number.isFinite(minutes)) return null;
@@ -394,61 +380,42 @@ export default function Home() {
               lineHeight: 1.6,
             }}
           >
-            Pinewood è un modo nuovo di vivere i sentieri: non una semplice lista di tracce, ma un compagno
-            digitale pensato per chi cammina davvero. Qui trovi percorsi verificati, dettagli utili in movimento e
-            una comunità che condivide esperienza concreta, non solo chilometri. Il mood è essenziale, terreno,
-            autentico: meno rumore, più orientamento. Ogni schermata è progettata per aiutarti quando sei fuori, non
-            quando sei comodo sul divano. “Keep the way” non è solo un claim: è un invito a restare sul percorso,
-            scoprire il territorio con rispetto e trasformare ogni uscita in un’esperienza più consapevole, sicura e
-            memorabile.
+            Pinewood nasce per chi cammina davvero, senza filtri e senza rumore. Keep the way significa restare sul
+            percorso, ma anche restare fedeli al proprio ritmo: partire, orientarsi, ascoltare il territorio. Qui i
+            trail non sono vetrina: sono strumenti concreti per vivere meglio ogni uscita, con dati chiari, mappe
+            essenziali e una community che condivide esperienza reale. Il mood è semplice: natura, presenza, direzione.
+            Meno distrazioni, più sentiero. Che tu sia in allenamento, in esplorazione o in una giornata lenta,
+            Pinewood ti accompagna dove serve davvero: fuori, passo dopo passo, con testa leggera e sguardo aperto.
+            Keep the way. Sempre.
           </Typography>
-
-          {!notice.text && randomTrail && (
-            <Box sx={{ width: "100vw", ml: "calc(50% - 50vw)", mr: "calc(50% - 50vw)", bgcolor: "#103a25", py: 2 }}>
-              <Container maxWidth="sm">{renderTrailCard(randomTrail)}</Container>
-            </Box>
-          )}
 
           {nearest.length > 0 && (
             <Stack spacing={1}>
-              <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                <Typography sx={{ fontWeight: 700 }}>Vicino a te</Typography>
-                <Stack direction="row" spacing={0.4}>
-                  <IconButton
-                    size="small"
-                    onClick={() => setNearIndex((v) => Math.max(0, v - 1))}
-                    disabled={nearIndex <= 0}
-                  >
-                    <ChevronLeftRoundedIcon />
-                  </IconButton>
-                  <IconButton
-                    size="small"
-                    onClick={() => setNearIndex((v) => Math.min(nearest.length - 1, v + 1))}
-                    disabled={nearIndex >= nearest.length - 1}
-                  >
-                    <ChevronRightRoundedIcon />
-                  </IconButton>
-                </Stack>
-              </Box>
-              {renderTrailCard(nearest[nearIndex])}
-              <Stack direction="row" spacing={0.9} sx={{ justifyContent: "center", pt: 0.2 }}>
-                {nearest.map((_, idx) => (
-                  <Box
-                    key={`dot-${idx}`}
-                    onClick={() => setNearIndex(idx)}
-                    sx={{
-                      width: idx === nearIndex ? 20 : 8,
-                      height: 8,
-                      borderRadius: 999,
-                      bgcolor: idx === nearIndex ? "#2D4F1E" : "rgba(45,79,30,0.25)",
-                      transition: "all .22s ease",
-                      cursor: "pointer",
-                    }}
-                  />
+              <Typography sx={{ fontWeight: 700 }}>Vicino a te</Typography>
+              <Box
+                sx={{
+                  display: "flex",
+                  gap: 1.2,
+                  overflowX: "auto",
+                  pb: 0.4,
+                  scrollSnapType: "x mandatory",
+                  scrollbarWidth: "none",
+                  msOverflowStyle: "none",
+                  "&::-webkit-scrollbar": { display: "none" },
+                }}
+              >
+                {nearest.map((trail) => (
+                  <Box key={`near-${trail.id}`} sx={{ minWidth: "86%", scrollSnapAlign: "start" }}>
+                    {renderTrailCard(trail)}
+                  </Box>
                 ))}
-              </Stack>
+              </Box>
             </Stack>
           )}
+
+          <Typography variant="h6" sx={{ fontWeight: 700, mt: 1 }}>
+            Tutti i trail
+          </Typography>
 
           <TextField
             value={query}
@@ -468,9 +435,7 @@ export default function Home() {
             <Alert severity={notice.type === "error" ? "error" : "success"}>{notice.text}</Alert>
           )}
 
-          <Typography variant="caption" color="text.secondary">
-            {t(lang, "allTrails")} (popolari): {popular.length}
-          </Typography>
+          <Typography variant="caption" color="text.secondary">{popular.length} tracciati disponibili</Typography>
 
           <Stack spacing={1.4}>
             {popularVisible.map((trail) => renderTrailCard(trail))}
