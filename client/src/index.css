@@ -206,6 +206,11 @@ h2 {
   border: none !important;
 }
 
+/* Keep GPX strokes visually constant while zoom animates. */
+.leaflet-interactive.pinewood-fixed-stroke {
+  vector-effect: non-scaling-stroke;
+}
+
 @keyframes nav-off-toast-pulse {
   0%,
   100% {

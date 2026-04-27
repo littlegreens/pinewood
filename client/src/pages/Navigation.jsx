@@ -17,7 +17,7 @@ import LockOutlinedIcon from "@mui/icons-material/LockOutlined";
 import MyLocationIcon from "@mui/icons-material/MyLocation";
 import StopIcon from "@mui/icons-material/Stop";
 import WarningAmberRoundedIcon from "@mui/icons-material/WarningAmberRounded";
-import { MapContainer, Marker, Polyline, TileLayer, useMap } from "react-leaflet";
+import { MapContainer, Marker, Polyline, TileLayer, useMap, useMapEvents } from "react-leaflet";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { detectLanguage, t } from "../services/i18n.js";
 import { apiFetch } from "../services/api.js";
@@ -27,6 +27,7 @@ import {
   vibrateOffRoute,
   vibrateOffRoutePulse,
 } from "../services/navigationAlerts.js";
+import { requestQuickLocation, subscribeLocation } from "../services/locationTracker.js";
 import {
   exitDocumentFullscreen,
   isDocumentFullscreenActive,
@@ -52,6 +53,15 @@ function MapReadyBridge({ onReady }) {
   useEffect(() => {
     onReady(map);
   }, [map, onReady]);
+  return null;
+}
+
+function MapInteractionBridge({ onMapClick }) {
+  useMapEvents({
+    click(e) {
+      onMapClick?.(e.latlng);
+    },
+  });
   return null;
 }
 
@@ -134,6 +144,8 @@ export default function Navigation() {
   const lastAlongRef = useRef(null);
   const pendingOffRouteSinceRef = useRef(null);
   const pendingOnRouteSinceRef = useRef(null);
+  const [showTrailLine, setShowTrailLine] = useState(false);
+  const centeredOnStartRef = useRef(false);
 
   function navRuntimeStateKey() {
     return `${NAV_RUNTIME_STATE_KEY_PREFIX}${sessionId}`;
@@ -237,6 +249,10 @@ export default function Navigation() {
   }
 
   useEffect(() => {
+    const unsub = subscribeLocation((snapshot) => {
+      if (!snapshot?.position) return;
+      setPosition((prev) => prev || snapshot.position);
+    });
     let watchId;
     prevPosRef.current = null;
     lastHeadingRef.current = null;
@@ -288,6 +304,7 @@ export default function Navigation() {
     }
     load();
     return () => {
+      unsub?.();
       if (watchId != null) navigator.geolocation.clearWatch(watchId);
     };
   }, [sessionId, navigate]);
@@ -611,8 +628,45 @@ export default function Navigation() {
 
   useEffect(() => {
     if (!mapInstance || line.length === 0) return;
-    mapInstance.setView(line[0], Math.max(mapInstance.getZoom(), 17), { animate: true });
-  }, [mapInstance, line]);
+    setShowTrailLine(false);
+    centeredOnStartRef.current = false;
+
+    // Apertura fluida: prima camera, poi disegno della traccia per evitare scatti.
+    const onMoveEnd = () => setShowTrailLine(true);
+    mapInstance.once("moveend", onMoveEnd);
+
+    if (position) {
+      mapInstance.stop();
+      mapInstance.flyTo(position, Math.max(mapInstance.getZoom(), 15), {
+        animate: true,
+        duration: 0.8,
+        easeLinearity: 0.2,
+      });
+      centeredOnStartRef.current = true;
+    } else {
+      mapInstance.fitBounds(line, {
+        padding: [18, 18],
+        animate: true,
+        duration: 0.8,
+      });
+    }
+
+    return () => {
+      mapInstance.off("moveend", onMoveEnd);
+    };
+  }, [mapInstance, line, position]);
+
+  useEffect(() => {
+    if (!mapInstance || startGate !== "ready" || !position) return;
+    if (centeredOnStartRef.current) return;
+    mapInstance.stop();
+    mapInstance.flyTo(position, Math.max(mapInstance.getZoom(), 15), {
+      animate: true,
+      duration: 0.7,
+      easeLinearity: 0.2,
+    });
+    centeredOnStartRef.current = true;
+  }, [mapInstance, startGate, position]);
 
   useEffect(() => {
     if (startGate !== "ready") return;
@@ -684,9 +738,28 @@ export default function Navigation() {
     navigate(target.pathname, { replace: true, state: target.state });
   }
 
-  function centerOnUser() {
-    if (!mapInstance || !position) return;
-    mapInstance.setView(position, Math.max(mapInstance.getZoom(), 15), { animate: true });
+  async function centerOnUser() {
+    if (!mapInstance) return;
+    const target = position || (await requestQuickLocation({ timeoutMs: 3500 }));
+    if (!target) return;
+    mapInstance.stop();
+    mapInstance.flyTo(target, Math.max(mapInstance.getZoom(), 15), {
+      animate: true,
+      duration: 0.65,
+      easeLinearity: 0.2,
+    });
+  }
+
+  function onMapClickZoom(latlng) {
+    if (!mapInstance || !latlng) return;
+    // Zoom volutamente meno aggressivo: un livello in meno rispetto al comportamento precedente.
+    const targetZoom = Math.min(17, Math.max(13, mapInstance.getZoom() + 1));
+    mapInstance.stop();
+    mapInstance.flyTo([latlng.lat, latlng.lng], targetZoom, {
+      animate: true,
+      duration: 0.55,
+      easeLinearity: 0.2,
+    });
   }
 
   function buildElevationPath(profile, width, height, pad) {
@@ -1056,12 +1129,22 @@ export default function Navigation() {
               zoom={14}
               style={{ width: "100%", height: "100%" }}
               zoomControl={false}
+              doubleClickZoom={false}
             >
               <MapReadyBridge onReady={setMapInstance} />
+              <MapInteractionBridge onMapClick={onMapClickZoom} />
               <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" attribution="" />
-              {line.length > 1 && <Polyline positions={line} pathOptions={{ color: "#2D4F1E", weight: 4 }} />}
+              {showTrailLine && line.length > 1 && (
+                <Polyline
+                  positions={line}
+                  pathOptions={{ color: "#2D4F1E", weight: 4, className: "pinewood-fixed-stroke" }}
+                />
+              )}
               {actualTrack.length > 1 && (
-                <Polyline positions={actualTrack} pathOptions={{ color: "#c9a84c", weight: 3, opacity: 0.9 }} />
+                <Polyline
+                  positions={actualTrack}
+                  pathOptions={{ color: "#c9a84c", weight: 3, opacity: 0.9, className: "pinewood-fixed-stroke" }}
+                />
               )}
               {position && <NavigationUserMarker position={position} headingDeg={userHeading} />}
             </MapContainer>

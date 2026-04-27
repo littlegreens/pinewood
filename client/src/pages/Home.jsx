@@ -3,6 +3,7 @@ import {
   Alert,
   Avatar,
   Box,
+  Button,
   Card,
   CardContent,
   Chip,
@@ -16,6 +17,8 @@ import {
 import SearchIcon from "@mui/icons-material/Search";
 import NorthRoundedIcon from "@mui/icons-material/NorthRounded";
 import SouthRoundedIcon from "@mui/icons-material/SouthRounded";
+import ChevronLeftRoundedIcon from "@mui/icons-material/ChevronLeftRounded";
+import ChevronRightRoundedIcon from "@mui/icons-material/ChevronRightRounded";
 import { useNavigate } from "react-router-dom";
 import { detectLanguage, t } from "../services/i18n.js";
 import InternalHeader from "../components/InternalHeader.jsx";
@@ -25,6 +28,20 @@ import { apiFetch } from "../services/api.js";
 import { requestQuickLocation, subscribeLocation } from "../services/locationTracker.js";
 
 const API = import.meta.env.VITE_API_URL || "";
+const PAGE_SIZE = 6;
+
+function distanceMeters(a, b) {
+  const toRad = (v) => (v * Math.PI) / 180;
+  const R = 6371000;
+  const dLat = toRad(b[0] - a[0]);
+  const dLon = toRad(b[1] - a[1]);
+  const lat1 = toRad(a[0]);
+  const lat2 = toRad(b[0]);
+  const x =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  return 2 * R * Math.atan2(Math.sqrt(x), Math.sqrt(1 - x));
+}
 
 export default function Home() {
   const navigate = useNavigate();
@@ -36,6 +53,9 @@ export default function Home() {
   const [locationResolved, setLocationResolved] = useState(false);
   const [isGuest, setIsGuest] = useState(() => !localStorage.getItem("pinewood_access_token"));
   const [heroBackground, setHeroBackground] = useState("");
+  const [nearIndex, setNearIndex] = useState(0);
+  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
+  const [randomTrailId, setRandomTrailId] = useState(null);
 
   const [me, setMe] = useState(() => {
     const raw = localStorage.getItem("pinewood_user");
@@ -173,12 +193,151 @@ export default function Home() {
     return items.filter((trail) => trail.name?.toLowerCase().includes(query.toLowerCase()));
   }, [items, query]);
 
+  const nearest = useMemo(() => {
+    const withDistance = items
+      .map((trail) => {
+        if (!myPos || trail.start_lat == null || trail.start_lon == null) {
+          return { trail, d: Number.POSITIVE_INFINITY };
+        }
+        return {
+          trail,
+          d: distanceMeters(myPos, [Number(trail.start_lat), Number(trail.start_lon)]),
+        };
+      })
+      .sort((a, b) => a.d - b.d)
+      .map((x) => x.trail);
+    return withDistance.slice(0, 5);
+  }, [items, myPos]);
+
+  const popular = useMemo(() => {
+    const score = (trail) => (trail.hikers_count || 0) * 2 + (trail.saves_count || 0);
+    return [...filtered].sort((a, b) => score(b) - score(a));
+  }, [filtered]);
+
+  const popularVisible = useMemo(() => popular.slice(0, visibleCount), [popular, visibleCount]);
+
+  const randomTrail = useMemo(() => {
+    if (!items.length) return null;
+    if (randomTrailId) return items.find((t) => t.id === randomTrailId) || items[0];
+    return items[0];
+  }, [items, randomTrailId]);
+
+  useEffect(() => {
+    if (!items.length) return;
+    setNearIndex((idx) => (nearest.length ? Math.min(idx, nearest.length - 1) : 0));
+    setVisibleCount(PAGE_SIZE);
+    if (randomTrailId && items.some((t) => t.id === randomTrailId)) return;
+    const candidate = items[Math.floor(Math.random() * items.length)];
+    setRandomTrailId(candidate?.id || null);
+  }, [items, nearest.length, randomTrailId]);
+
   function formatMinutesToHours(minutes) {
     if (!Number.isFinite(minutes)) return null;
     const h = Math.floor(minutes / 60);
     const m = Math.round(minutes % 60);
     if (h <= 0) return `${m} min`;
     return `${h} h ${m} min`;
+  }
+
+  function renderTrailCard(trail) {
+    const ownerLabel = trail.owner_name || "User";
+    const ownerInitial = ownerLabel.slice(0, 1).toUpperCase();
+    const meAvatarSrc = me?.avatar_url ? `${API}${me.avatar_url}` : undefined;
+    const ownerAvatarSrc = trail.owner_avatar_url ? `${API}${trail.owner_avatar_url}` : undefined;
+
+    return (
+      <Card
+        key={trail.id}
+        variant="outlined"
+        sx={{ overflow: "hidden", cursor: "pointer" }}
+        onClick={() => navigate(`/app/trails/${trail.id}`, { state: { backTo: "/app" } })}
+      >
+        <Box sx={{ width: "100%", lineHeight: 0, position: "relative" }}>
+          {!trail.is_mine && !isGuest && (
+            <IconButton
+              size="small"
+              disableRipple
+              onClick={(event) => {
+                event.stopPropagation();
+                toggleSaved(trail);
+              }}
+              sx={{
+                position: "absolute",
+                top: 0,
+                right: 0,
+                pt: 0,
+                zIndex: 2,
+                color: "#8B919A",
+                "&:hover": { bgcolor: "transparent" },
+                "&.Mui-focusVisible": { bgcolor: "transparent" },
+              }}
+              aria-label={t(lang, "saveTrail")}
+            >
+              <BookmarkPinewoodIcon filled={Boolean(trail.is_saved)} sx={{ fontSize: 26 }} />
+            </IconButton>
+          )}
+          <Box dangerouslySetInnerHTML={{ __html: trail.svg_preview }} />
+        </Box>
+        <CardContent sx={{ display: "grid", gap: 1.1, p: 1.6 }}>
+          <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 1 }}>
+            <Typography sx={{ fontWeight: 700, lineHeight: 1.2 }}>{trail.name}</Typography>
+            <Stack direction="row" spacing={0.4} sx={{ alignItems: "center" }}>
+              {trail.source === "osm" && <Chip size="small" label="CAI" color="secondary" />}
+            </Stack>
+          </Box>
+
+          <TrailEngagementStats hikersCount={trail.hikers_count} savesCount={trail.saves_count} dense />
+
+          <Box sx={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 0.8 }}>
+            {trail.distance_km != null && (
+              <Typography variant="body2" color="text.secondary">
+                {Number(trail.distance_km).toFixed(2).replace(".", ",")} km
+              </Typography>
+            )}
+            {trail.estimated_time_minutes != null && (
+              <Typography variant="body2" color="text.secondary">
+                | {formatMinutesToHours(trail.estimated_time_minutes)}
+              </Typography>
+            )}
+            {(trail.elevation_gain_m != null || trail.elevation_loss_m != null) && (
+              <Typography
+                variant="body2"
+                color="text.secondary"
+                sx={{ display: "inline-flex", alignItems: "center", gap: 0.2 }}
+              >
+                | <NorthRoundedIcon sx={{ fontSize: 15 }} />
+                {trail.elevation_gain_m ?? "-"}m
+                <SouthRoundedIcon sx={{ fontSize: 15, ml: 0.2 }} />
+                {trail.elevation_loss_m ?? trail.elevation_gain_m ?? "-"}m
+              </Typography>
+            )}
+            {trail.difficulty && (
+              <Typography variant="body2" color="text.secondary">
+                | {trail.difficulty}
+              </Typography>
+            )}
+          </Box>
+
+          <Box sx={{ display: "flex", alignItems: "center", gap: 0.8 }}>
+            <Avatar
+              src={trail.is_mine ? meAvatarSrc : ownerAvatarSrc}
+              sx={{
+                width: 24,
+                height: 24,
+                fontSize: "0.75rem",
+                bgcolor:
+                  (trail.is_mine && meAvatarSrc) || (!trail.is_mine && ownerAvatarSrc) ? "#fff" : undefined,
+              }}
+            >
+              {trail.is_mine ? (me?.name?.slice(0, 1).toUpperCase() || ownerInitial) : ownerInitial}
+            </Avatar>
+            <Typography variant="caption" color="text.secondary">
+              {ownerLabel}
+            </Typography>
+          </Box>
+        </CardContent>
+      </Card>
+    );
   }
 
   return (
@@ -228,6 +387,69 @@ export default function Home() {
 
       <Container maxWidth="sm" sx={{ py: 2.5, pb: 10 }}>
         <Stack spacing={2}>
+          <Typography
+            sx={{
+              fontFamily: '"Titillium Web", sans-serif',
+              color: "#1f2a22",
+              lineHeight: 1.6,
+            }}
+          >
+            Pinewood è un modo nuovo di vivere i sentieri: non una semplice lista di tracce, ma un compagno
+            digitale pensato per chi cammina davvero. Qui trovi percorsi verificati, dettagli utili in movimento e
+            una comunità che condivide esperienza concreta, non solo chilometri. Il mood è essenziale, terreno,
+            autentico: meno rumore, più orientamento. Ogni schermata è progettata per aiutarti quando sei fuori, non
+            quando sei comodo sul divano. “Keep the way” non è solo un claim: è un invito a restare sul percorso,
+            scoprire il territorio con rispetto e trasformare ogni uscita in un’esperienza più consapevole, sicura e
+            memorabile.
+          </Typography>
+
+          {!notice.text && randomTrail && (
+            <Box sx={{ width: "100vw", ml: "calc(50% - 50vw)", mr: "calc(50% - 50vw)", bgcolor: "#103a25", py: 2 }}>
+              <Container maxWidth="sm">{renderTrailCard(randomTrail)}</Container>
+            </Box>
+          )}
+
+          {nearest.length > 0 && (
+            <Stack spacing={1}>
+              <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                <Typography sx={{ fontWeight: 700 }}>Vicino a te</Typography>
+                <Stack direction="row" spacing={0.4}>
+                  <IconButton
+                    size="small"
+                    onClick={() => setNearIndex((v) => Math.max(0, v - 1))}
+                    disabled={nearIndex <= 0}
+                  >
+                    <ChevronLeftRoundedIcon />
+                  </IconButton>
+                  <IconButton
+                    size="small"
+                    onClick={() => setNearIndex((v) => Math.min(nearest.length - 1, v + 1))}
+                    disabled={nearIndex >= nearest.length - 1}
+                  >
+                    <ChevronRightRoundedIcon />
+                  </IconButton>
+                </Stack>
+              </Box>
+              {renderTrailCard(nearest[nearIndex])}
+              <Stack direction="row" spacing={0.9} sx={{ justifyContent: "center", pt: 0.2 }}>
+                {nearest.map((_, idx) => (
+                  <Box
+                    key={`dot-${idx}`}
+                    onClick={() => setNearIndex(idx)}
+                    sx={{
+                      width: idx === nearIndex ? 20 : 8,
+                      height: 8,
+                      borderRadius: 999,
+                      bgcolor: idx === nearIndex ? "#2D4F1E" : "rgba(45,79,30,0.25)",
+                      transition: "all .22s ease",
+                      cursor: "pointer",
+                    }}
+                  />
+                ))}
+              </Stack>
+            </Stack>
+          )}
+
           <TextField
             value={query}
             onChange={(e) => setQuery(e.target.value)}
@@ -247,116 +469,17 @@ export default function Home() {
           )}
 
           <Typography variant="caption" color="text.secondary">
-            {t(lang, "allTrails")}: {filtered.length}
+            {t(lang, "allTrails")} (popolari): {popular.length}
           </Typography>
 
           <Stack spacing={1.4}>
-            {filtered.map((trail) => {
-              const ownerLabel = trail.owner_name || "User";
-              const ownerInitial = ownerLabel.slice(0, 1).toUpperCase();
-              const meAvatarSrc = me?.avatar_url ? `${API}${me.avatar_url}` : undefined;
-              const ownerAvatarSrc = trail.owner_avatar_url ? `${API}${trail.owner_avatar_url}` : undefined;
-
-              return (
-                <Card
-                  key={trail.id}
-                  variant="outlined"
-                  sx={{ overflow: "hidden", cursor: "pointer" }}
-                  onClick={() =>
-                    navigate(`/app/trails/${trail.id}`, { state: { backTo: "/app" } })
-                  }
-                >
-                  <Box sx={{ width: "100%", lineHeight: 0, position: "relative" }}>
-                    {!trail.is_mine && !isGuest && (
-                      <IconButton
-                        size="small"
-                        disableRipple
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          toggleSaved(trail);
-                        }}
-                        sx={{
-                          position: "absolute",
-                          top: 0,
-                          right: 0,
-                          pt: 0,
-                          zIndex: 2,
-                          color: "#8B919A",
-                          filter: "none",
-                          "&:hover": { bgcolor: "transparent" },
-                          "&.Mui-focusVisible": { bgcolor: "transparent" },
-                        }}
-                        aria-label={t(lang, "saveTrail")}
-                      >
-                        <BookmarkPinewoodIcon filled={Boolean(trail.is_saved)} sx={{ fontSize: 26 }} />
-                      </IconButton>
-                    )}
-                    <Box dangerouslySetInnerHTML={{ __html: trail.svg_preview }} />
-                  </Box>
-                  <CardContent sx={{ display: "grid", gap: 1.1, p: 1.6 }}>
-                    <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 1 }}>
-                      <Typography sx={{ fontWeight: 700, lineHeight: 1.2 }}>{trail.name}</Typography>
-                      <Stack direction="row" spacing={0.4} sx={{ alignItems: "center" }}>
-                        {trail.source === "osm" && <Chip size="small" label="CAI" color="secondary" />}
-                      </Stack>
-                    </Box>
-
-                    <TrailEngagementStats hikersCount={trail.hikers_count} savesCount={trail.saves_count} dense />
-
-                    <Box sx={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 0.8 }}>
-                      {trail.distance_km != null && (
-                        <Typography variant="body2" color="text.secondary">
-                          {Number(trail.distance_km).toFixed(2).replace(".", ",")} km
-                        </Typography>
-                      )}
-                      {trail.estimated_time_minutes != null && (
-                        <Typography variant="body2" color="text.secondary">
-                          | {formatMinutesToHours(trail.estimated_time_minutes)}
-                        </Typography>
-                      )}
-                      {(trail.elevation_gain_m != null || trail.elevation_loss_m != null) && (
-                        <Typography
-                          variant="body2"
-                          color="text.secondary"
-                          sx={{ display: "inline-flex", alignItems: "center", gap: 0.2 }}
-                        >
-                          | <NorthRoundedIcon sx={{ fontSize: 15 }} />
-                          {trail.elevation_gain_m ?? "-"}m
-                          <SouthRoundedIcon sx={{ fontSize: 15, ml: 0.2 }} />
-                          {trail.elevation_loss_m ?? trail.elevation_gain_m ?? "-"}m
-                        </Typography>
-                      )}
-                      {trail.difficulty && (
-                        <Typography variant="body2" color="text.secondary">
-                          | {trail.difficulty}
-                        </Typography>
-                      )}
-                    </Box>
-
-                    <Box sx={{ display: "flex", alignItems: "center", gap: 0.8 }}>
-                      <Avatar
-                        src={trail.is_mine ? meAvatarSrc : ownerAvatarSrc}
-                        sx={{
-                          width: 24,
-                          height: 24,
-                          fontSize: "0.75rem",
-                          bgcolor:
-                            (trail.is_mine && meAvatarSrc) || (!trail.is_mine && ownerAvatarSrc)
-                              ? "#fff"
-                              : undefined,
-                        }}
-                      >
-                        {trail.is_mine ? (me?.name?.slice(0, 1).toUpperCase() || ownerInitial) : ownerInitial}
-                      </Avatar>
-                      <Typography variant="caption" color="text.secondary">
-                        {ownerLabel}
-                      </Typography>
-                    </Box>
-                  </CardContent>
-                </Card>
-              );
-            })}
+            {popularVisible.map((trail) => renderTrailCard(trail))}
           </Stack>
+          {visibleCount < popular.length && (
+            <Button variant="outlined" onClick={() => setVisibleCount((v) => v + PAGE_SIZE)}>
+              Carica altri
+            </Button>
+          )}
         </Stack>
       </Container>
     </Box>

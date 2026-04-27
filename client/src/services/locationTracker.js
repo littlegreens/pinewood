@@ -3,6 +3,7 @@ const LAST_LOCATION_KEY = "pinewood_last_location";
 let watchId = null;
 let listeners = new Set();
 let lastSnapshot = null;
+let warmupPromise = null;
 
 function hydrateLastSnapshot() {
   if (lastSnapshot) return;
@@ -71,6 +72,37 @@ export function startBackgroundLocationTracking() {
       timeout: 15_000,
     }
   );
+}
+
+/**
+ * Warmup esplicito del GPS appena l'app si avvia:
+ * prova una fix accurata una sola volta e popola la cache condivisa.
+ */
+export function warmupLocationFix({ timeoutMs = 10000 } = {}) {
+  if (!navigator.geolocation) return Promise.resolve(null);
+  if (warmupPromise) return warmupPromise;
+  warmupPromise = new Promise((resolve) => {
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        const snapshot = {
+          position: [pos.coords.latitude, pos.coords.longitude],
+          accuracy: pos.coords.accuracy ?? null,
+          ts: Date.now(),
+        };
+        persistSnapshot(snapshot);
+        resolve(snapshot.position);
+      },
+      () => resolve(null),
+      {
+        enableHighAccuracy: true,
+        maximumAge: 5000,
+        timeout: timeoutMs,
+      }
+    );
+  }).finally(() => {
+    warmupPromise = null;
+  });
+  return warmupPromise;
 }
 
 export function stopBackgroundLocationTracking() {

@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect } from "react";
 import { Outlet, useLocation, useNavigate } from "react-router-dom";
 import { bootstrapAuth } from "./services/api.js";
 import {
+  warmupLocationFix,
   startBackgroundLocationTracking,
   stopBackgroundLocationTracking,
 } from "./services/locationTracker.js";
@@ -20,6 +21,7 @@ export default function App() {
 
   useEffect(() => {
     void bootstrapAuth();
+    void warmupLocationFix({ timeoutMs: 9000 });
     startBackgroundLocationTracking();
     return () => {
       stopBackgroundLocationTracking();

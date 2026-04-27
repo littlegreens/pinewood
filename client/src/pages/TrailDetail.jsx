@@ -841,7 +841,12 @@ export default function TrailDetail() {
                 attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
                 url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
               />
-              {line.length > 1 && <Polyline positions={line} pathOptions={{ color: "#2D4F1E", weight: 4 }} />}
+              {line.length > 1 && (
+                <Polyline
+                  positions={line}
+                  pathOptions={{ color: "#2D4F1E", weight: 4, className: "pinewood-fixed-stroke" }}
+                />
+              )}
               {line.length > 0 && (
                 <CircleMarker center={line[0]} radius={6} pathOptions={{ color: "#4a8c5c", fillOpacity: 1 }}>
                   <Popup>{t(lang, "startPoint")}</Popup>
