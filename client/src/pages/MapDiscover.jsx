@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Alert, Box, Button, IconButton, InputAdornment, Paper, Stack, TextField, Typography } from "@mui/material";
 import MyLocationRoundedIcon from "@mui/icons-material/MyLocationRounded";
 import CloseRoundedIcon from "@mui/icons-material/CloseRounded";
@@ -18,7 +18,6 @@ const INITIAL_CENTER = [42.7, 12.6];
 const INITIAL_ZOOM = 10;
 const MAP_OVERLAY_ZINDEX = 1200;
 const API = import.meta.env.VITE_API_URL || "";
-const MAP_DEBUG_NS = "[map.debug]";
 
 function FitAllPoints({ points }) {
   const map = useMap();
@@ -34,15 +33,20 @@ function FitAllPoints({ points }) {
   return null;
 }
 
-function ClusterLayer({ points, selectedTrailId, onRevealTrail }) {
+function ClusterLayer({ points, onRevealTrail, onClusterClickStart }) {
   const map = useMap();
   const clusterLayerRef = useRef(null);
+  const onRevealTrailRef = useRef(onRevealTrail);
+
+  useEffect(() => {
+    onRevealTrailRef.current = onRevealTrail;
+  }, [onRevealTrail]);
 
   useEffect(() => {
     const group = L.markerClusterGroup({
       spiderfyOnMaxZoom: true,
       showCoverageOnHover: false,
-      zoomToBoundsOnClick: false,
+      zoomToBoundsOnClick: true,
       removeOutsideVisibleBounds: true,
       maxClusterRadius: 52,
       iconCreateFunction(cluster) {
@@ -55,85 +59,7 @@ function ClusterLayer({ points, selectedTrailId, onRevealTrail }) {
       },
     });
     group.on("clusterclick", (event) => {
-      const cluster = event.layer;
-      if (!cluster) return;
-      const currentZoom = map.getZoom();
-      const beforeCenter = map.getCenter();
-      const childCount = typeof cluster.getChildCount === "function" ? cluster.getChildCount() : null;
-      console.info(`${MAP_DEBUG_NS} clusterclick`, {
-        currentZoom,
-        childCount,
-        center: cluster.getLatLng?.(),
-      });
-      map.stop();
-      // Forza una risposta deterministica: prima zoom sui bounds, poi spiderfy quando siamo gia vicini.
-      if (currentZoom >= 15) {
-        console.info(`${MAP_DEBUG_NS} clusterclick spiderfy`, { reason: "already_near_max_zoom" });
-        cluster.spiderfy();
-        return;
-      }
-      const bounds = cluster.getBounds?.();
-      if (bounds?.isValid?.()) {
-        console.info(`${MAP_DEBUG_NS} clusterclick flyToBounds`, {
-          maxZoom: 15,
-          southWest: bounds.getSouthWest?.(),
-          northEast: bounds.getNorthEast?.(),
-        });
-        map.flyToBounds(bounds, {
-          maxZoom: 15,
-          animate: true,
-          duration: 0.35,
-        });
-        return;
-      }
-      const center = cluster.getLatLng?.();
-      if (center) {
-        console.info(`${MAP_DEBUG_NS} clusterclick flyToCenter`, {
-          targetZoom: Math.max(currentZoom + 2, 14),
-          center,
-        });
-        map.flyTo(center, Math.max(currentZoom + 2, 14), {
-          animate: true,
-          duration: 0.35,
-        });
-      }
-
-      // Watchdog: se il primo click non produce movimento reale, ritenta una volta in automatico.
-      window.setTimeout(() => {
-        const afterZoom = map.getZoom();
-        const afterCenter = map.getCenter();
-        const centerShift = beforeCenter.distanceTo(afterCenter);
-        const movedEnough = afterZoom > currentZoom || centerShift > 8;
-        console.info(`${MAP_DEBUG_NS} clusterclick watchdog`, {
-          beforeZoom: currentZoom,
-          afterZoom,
-          centerShiftMeters: Math.round(centerShift),
-          movedEnough,
-        });
-        if (movedEnough) return;
-        const retryBounds = cluster.getBounds?.();
-        if (retryBounds?.isValid?.()) {
-          console.info(`${MAP_DEBUG_NS} clusterclick retry flyToBounds`);
-          map.stop();
-          map.flyToBounds(retryBounds, {
-            maxZoom: 15,
-            animate: true,
-            duration: 0.3,
-          });
-          return;
-        }
-        const retryCenter = cluster.getLatLng?.();
-        if (retryCenter) {
-          console.info(`${MAP_DEBUG_NS} clusterclick retry flyToCenter`, {
-            targetZoom: Math.max(currentZoom + 2, 14),
-          });
-          map.stop();
-          map.flyTo(retryCenter, Math.max(currentZoom + 2, 14), {
-            animate: true,
-            duration: 0.3,
-          });
-        }
-      }, 450);
+      onClusterClickStart?.();
     });
     clusterLayerRef.current = group;
     map.addLayer(group);
@@ -148,34 +74,22 @@ function ClusterLayer({ points, selectedTrailId, onRevealTrail }) {
     const group = clusterLayerRef.current;
     if (!group) return;
     group.clearLayers();
-    console.info(`${MAP_DEBUG_NS} markers render`, {
-      pointsCount: points.length,
-      selectedTrailId,
-    });
 
     for (const trail of points) {
-      const isSelected = trail.id === selectedTrailId;
       const marker = L.marker([trail.lat, trail.lon], {
         icon: L.divIcon({
           className: "pinewood-point-icon",
-          html: `<img src="/explore.svg" alt="" style="width:${isSelected ? 32 : 26}px;height:${isSelected ? 32 : 26}px;display:block;filter:drop-shadow(0 2px 8px rgba(0,0,0,0.25));" />`,
-          iconSize: [isSelected ? 32 : 26, isSelected ? 32 : 26],
-          iconAnchor: [isSelected ? 16 : 13, isSelected ? 16 : 13],
+          html: `<img src="/explore.svg" alt="" style="width:26px;height:26px;display:block;filter:drop-shadow(0 2px 8px rgba(0,0,0,0.25));" />`,
+          iconSize: [26, 26],
+          iconAnchor: [13, 13],
         }),
       });
       marker.on("click", () => {
-        console.info(`${MAP_DEBUG_NS} marker click`, {
-          trailId: trail.id,
-          name: trail.name,
-          lat: trail.lat,
-          lon: trail.lon,
-          currentZoom: map.getZoom(),
-        });
-        onRevealTrail?.(trail, map);
+        onRevealTrailRef.current?.(trail, map);
       });
       group.addLayer(marker);
     }
-  }, [map, onRevealTrail, points, selectedTrailId]);
+  }, [map, points]);
 
   return null;
 }
@@ -195,28 +109,6 @@ function LocateControl({ onLocate }) {
       );
     };
   }, [map, onLocate]);
-  return null;
-}
-
-function KeepSelectedPointVisible({ target, cardHeight, hasSelectedPath = false }) {
-  const map = useMap();
-  useEffect(() => {
-    // Se abbiamo gia la polyline selezionata, la camera e gia gestita da flyToBounds.
-    // Evitiamo un flyTo aggiuntivo che puo "schiacciare" lo zoom appena applicato.
-    if (hasSelectedPath) return;
-    if (!target || !Number.isFinite(target.lat) || !Number.isFinite(target.lon)) return;
-    const zoom = map.getZoom();
-    const targetPoint = map.project([target.lat, target.lon], zoom);
-    const upwardOffsetPx = Math.max(0, Math.round(cardHeight / 2) - 30);
-    const nextCenter = map.unproject(L.point(targetPoint.x, targetPoint.y + upwardOffsetPx), zoom);
-    console.info(`${MAP_DEBUG_NS} keepSelectedVisible`, {
-      trailId: target.id,
-      zoom,
-      cardHeight,
-      upwardOffsetPx,
-    });
-    map.flyTo(nextCenter, zoom, { animate: true, duration: 0.35 });
-  }, [map, target?.id, target?.lat, target?.lon, cardHeight, hasSelectedPath]);
   return null;
 }
 
@@ -264,10 +156,13 @@ export default function MapDiscover() {
 
   const [selectedTrail, setSelectedTrail] = useState(null);
   const [selectedTrailPath, setSelectedTrailPath] = useState(null);
-  const selectedTrailId = selectedTrail?.id ?? null;
+  const [trailPathLoading, setTrailPathLoading] = useState(false);
+  const [trailPathTimedOut, setTrailPathTimedOut] = useState(false);
   const pathCache = useMemo(() => new Map(), []);
   const cardRef = useRef(null);
   const [cardHeight, setCardHeight] = useState(0);
+  const pathLoadTimeoutRef = useRef(null);
+  const revealSeqRef = useRef(0);
 
   function toLatLngPath(geojson) {
     if (!geojson || !geojson.type) return null;
@@ -289,33 +184,39 @@ export default function MapDiscover() {
     return null;
   }
 
-  async function revealTrailOnMap(trail, mapInstance) {
+  const closeSelections = useCallback(() => {
+    revealSeqRef.current += 1;
+    if (pathLoadTimeoutRef.current != null) {
+      clearTimeout(pathLoadTimeoutRef.current);
+      pathLoadTimeoutRef.current = null;
+    }
+    setTrailPathLoading(false);
+    setTrailPathTimedOut(false);
+    setSelectedTrail(null);
+    setSelectedTrailPath(null);
+  }, []);
+
+  const revealTrailOnMap = useCallback(async (trail, mapInstance) => {
+    if (selectedTrail?.id === trail.id && selectedTrailPath?.length) {
+      return;
+    }
     function focusMarkerFallback() {
       if (!mapInstance) return;
       mapInstance.stop();
-      mapInstance.flyTo([trail.lat, trail.lon], Math.max(mapInstance.getZoom(), 14), {
+      mapInstance.flyTo([trail.lat, trail.lon], 14, {
         animate: true,
         duration: 0.35,
       });
     }
 
     function focusTrailPath(path) {
-      if (!mapInstance || !Array.isArray(path) || path.length < 2) {
-        focusMarkerFallback();
-        return;
-      }
+      if (!mapInstance || !Array.isArray(path) || path.length < 2) return;
       const validPath = path.filter(
         (pt) => Array.isArray(pt) && pt.length === 2 && Number.isFinite(pt[0]) && Number.isFinite(pt[1])
       );
-      if (validPath.length < 2) {
-        focusMarkerFallback();
-        return;
-      }
+      if (validPath.length < 2) return;
       const bounds = L.latLngBounds(validPath);
-      if (!bounds.isValid()) {
-        focusMarkerFallback();
-        return;
-      }
+      if (!bounds.isValid()) return;
       const bottomPad = Math.max(180, Math.round(cardHeight + 26));
       mapInstance.stop();
       mapInstance.flyToBounds(bounds, {
@@ -328,56 +229,63 @@ export default function MapDiscover() {
     }
 
     const runReveal = async () => {
-      console.info(`${MAP_DEBUG_NS} reveal start`, {
-        trailId: trail.id,
-        trailName: trail.name,
-        hasCachedPath: pathCache.has(trail.id),
-      });
+      const revealSeq = revealSeqRef.current + 1;
+      revealSeqRef.current = revealSeq;
+      if (pathLoadTimeoutRef.current != null) {
+        clearTimeout(pathLoadTimeoutRef.current);
+        pathLoadTimeoutRef.current = null;
+      }
       setSelectedTrail(trail);
-      // Feedback immediato al click: evita la sensazione di "blocco".
-      focusMarkerFallback();
+      setSelectedTrailPath(null);
+      setTrailPathLoading(true);
+      setTrailPathTimedOut(false);
       if (pathCache.has(trail.id)) {
         const cached = pathCache.get(trail.id);
+        if (revealSeqRef.current !== revealSeq) return;
+        if (pathLoadTimeoutRef.current != null) {
+          clearTimeout(pathLoadTimeoutRef.current);
+          pathLoadTimeoutRef.current = null;
+        }
+        setTrailPathLoading(false);
+        setTrailPathTimedOut(false);
         setSelectedTrailPath(cached);
-        console.info(`${MAP_DEBUG_NS} reveal cached path`, {
-          trailId: trail.id,
-          points: Array.isArray(cached) ? cached.length : 0,
-        });
         focusTrailPath(cached);
         return;
       }
+      pathLoadTimeoutRef.current = window.setTimeout(() => {
+        if (revealSeqRef.current !== revealSeq) return;
+        setTrailPathTimedOut(true);
+        focusMarkerFallback();
+      }, 3000);
       const res = await apiFetch(`/api/trails/${trail.id}`);
+      if (revealSeqRef.current !== revealSeq) return;
+      if (pathLoadTimeoutRef.current != null) {
+        clearTimeout(pathLoadTimeoutRef.current);
+        pathLoadTimeoutRef.current = null;
+      }
       if (!res.ok) {
-        console.warn(`${MAP_DEBUG_NS} reveal fetch fail`, {
-          trailId: trail.id,
-          status: res.status,
-        });
+        setTrailPathLoading(false);
+        setTrailPathTimedOut(false);
         setNotice("Non riesco a caricare il percorso adesso.");
         return;
       }
       const detail = await res.json();
+      if (revealSeqRef.current !== revealSeq) return;
       const path = toLatLngPath(detail.geom_geojson);
       if (!path || path.length < 2) {
-        console.warn(`${MAP_DEBUG_NS} reveal invalid path`, {
-          trailId: trail.id,
-          geomType: detail?.geom_geojson?.type,
-          coordsCount: Array.isArray(detail?.geom_geojson?.coordinates)
-            ? detail.geom_geojson.coordinates.length
-            : null,
-        });
+        setTrailPathLoading(false);
+        setTrailPathTimedOut(false);
         setNotice("Tracciato non disponibile per questo percorso.");
         return;
       }
-      console.info(`${MAP_DEBUG_NS} reveal fetched path`, {
-        trailId: trail.id,
-        points: path.length,
-      });
       pathCache.set(trail.id, path);
+      setTrailPathLoading(false);
+      setTrailPathTimedOut(false);
       setSelectedTrailPath(path);
       focusTrailPath(path);
     };
     await runReveal();
-  }
+  }, [cardHeight, pathCache, selectedTrail?.id, selectedTrailPath]);
 
   function formatMinutesToHours(minutes) {
     if (!Number.isFinite(Number(minutes))) return null;
@@ -398,12 +306,6 @@ export default function MapDiscover() {
     if (!q) return items;
     return items.filter((p) => String(p.name || "").toLowerCase().includes(q));
   }, [items, query]);
-
-  function closeSelections() {
-    console.info(`${MAP_DEBUG_NS} close selections`);
-    setSelectedTrail(null);
-    setSelectedTrailPath(null);
-  }
 
   useEffect(() => {
     if (!selectedTrail || !cardRef.current) return;
@@ -426,15 +328,10 @@ export default function MapDiscover() {
           />
           <LocateControl onLocate={locateAction} />
           <FitAllPoints points={items} />
-          <KeepSelectedPointVisible
-            target={selectedTrail}
-            cardHeight={cardHeight}
-            hasSelectedPath={Boolean(selectedTrailPath?.length)}
-          />
           <ClusterLayer
             points={filteredPoints}
-            selectedTrailId={selectedTrailId}
             onRevealTrail={revealTrailOnMap}
+            onClusterClickStart={closeSelections}
           />
           {selectedTrailPath && selectedTrailPath.length >= 2 && (
             <Polyline
@@ -522,10 +419,7 @@ export default function MapDiscover() {
             >
               <Box sx={{ position: "relative" }}>
                 <IconButton
-                  onClick={() => {
-                    setSelectedTrail(null);
-                    setSelectedTrailPath(null);
-                  }}
+                  onClick={closeSelections}
                   sx={{
                     position: "absolute",
                     top: 8,
@@ -570,6 +464,11 @@ export default function MapDiscover() {
                     </Typography>
                   )}
                 </Box>
+                {trailPathLoading && trailPathTimedOut && (
+                  <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1 }}>
+                    Caricamento traccia...
+                  </Typography>
+                )}
                 <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 1 }}>
                   <Box sx={{ display: "flex", alignItems: "center", gap: 0.7 }}>
                     <Box
