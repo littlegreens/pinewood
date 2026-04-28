@@ -39,7 +39,7 @@ import AppDialogTitle from "../components/AppDialogTitle.jsx";
 const POCKET_INTRO_SKIP_KEY = "pinewood_skip_pocket_intro";
 const START_GATE_RADIUS_M = 300;
 const GPS_START_TIMEOUT_MS = 14000;
-const OFF_ROUTE_VIBRATE_PULSE_MS = 6000;
+const OFF_ROUTE_VIBRATE_PULSE_MS = 3000;
 const OFF_ROUTE_VOICE_INTERVAL_MS = 12000;
 const NAV_RUNTIME_STATE_KEY_PREFIX = "pinewood_nav_runtime_";
 const OFF_ROUTE_ENTER_M = 50;
@@ -47,6 +47,8 @@ const OFF_ROUTE_EXIT_M = 35;
 const OFF_ROUTE_ENTER_DELAY_MS = 4500;
 const OFF_ROUTE_EXIT_DELAY_MS = 2500;
 const VISIT_MARGIN_M = 8;
+const OFFLINE_TRAIL_KEY_PREFIX = "pw_trail_";
+const LEGACY_OFFLINE_TRAIL_KEY_PREFIX = "pinewood_offline_trail_";
 
 function MapReadyBridge({ onReady }) {
   const map = useMap();
@@ -146,9 +148,38 @@ export default function Navigation() {
   const pendingOnRouteSinceRef = useRef(null);
   const [showTrailLine, setShowTrailLine] = useState(false);
   const centeredOnStartRef = useRef(false);
+  const isOfflineLocalSession = useMemo(
+    () => String(sessionId || "").startsWith("local_") || location.state?.offlineSession === true,
+    [sessionId, location.state]
+  );
 
   function navRuntimeStateKey() {
     return `${NAV_RUNTIME_STATE_KEY_PREFIX}${sessionId}`;
+  }
+
+  function offlineTrailStorageKey(trailId) {
+    return `${OFFLINE_TRAIL_KEY_PREFIX}${String(trailId)}`;
+  }
+
+  function legacyOfflineTrailStorageKey(trailId) {
+    return `${LEGACY_OFFLINE_TRAIL_KEY_PREFIX}${String(trailId)}`;
+  }
+
+  function getOfflineTrailPayload() {
+    const fromState = location.state?.offlineTrail;
+    if (fromState?.geom_geojson?.coordinates?.length) return fromState;
+    const trailIdFromState = location.state?.trailId;
+    if (!trailIdFromState) return null;
+    const raw =
+      localStorage.getItem(offlineTrailStorageKey(trailIdFromState)) ||
+      localStorage.getItem(legacyOfflineTrailStorageKey(trailIdFromState));
+    if (!raw) return null;
+    try {
+      return JSON.parse(raw);
+    } catch {
+      localStorage.removeItem(offlineTrailStorageKey(trailIdFromState));
+      return null;
+    }
   }
 
   function mergeIntervals(intervals, incoming) {
@@ -182,6 +213,7 @@ export default function Navigation() {
   }, [location.state]);
 
   const abortStartSession = useCallback(async () => {
+    if (isOfflineLocalSession) return;
     if (sessionAbortedRef.current) return;
     sessionAbortedRef.current = true;
     try {
@@ -197,7 +229,7 @@ export default function Navigation() {
     } catch {
       /* ignore */
     }
-  }, [sessionId]);
+  }, [sessionId, isOfflineLocalSession]);
 
   function distanceMeters(a, b) {
     const toRad = (v) => (v * Math.PI) / 180;
@@ -258,6 +290,19 @@ export default function Navigation() {
     lastHeadingRef.current = null;
     setUserHeading(null);
     async function load() {
+      if (isOfflineLocalSession) {
+        const offlineData = getOfflineTrailPayload();
+        const coords = offlineData?.geom_geojson?.coordinates || [];
+        if (!coords.length) {
+          const target = location.state?.trailId ? `/app/trails/${location.state.trailId}` : "/app";
+          navigate(target, { replace: true });
+          return;
+        }
+        setLine(coords.map(([lon, lat]) => [lat, lon]));
+        setElevationProfile(Array.isArray(offlineData?.elevation_profile) ? offlineData.elevation_profile : []);
+        setParseStatus(offlineData?.parse_status || null);
+        setWaypoints(Array.isArray(offlineData?.waypoints) ? offlineData.waypoints : []);
+      } else {
       const res = await apiFetch(`/api/sessions/${sessionId}`);
       if (res.status === 401) {
         navigate("/");
@@ -270,6 +315,7 @@ export default function Navigation() {
       setElevationProfile(Array.isArray(data?.elevation_profile) ? data.elevation_profile : []);
       setParseStatus(data?.parse_status || null);
       setWaypoints(Array.isArray(data?.waypoints) ? data.waypoints : []);
+      }
       watchId = navigator.geolocation.watchPosition(
         (p) => {
           const lat = p.coords.latitude;
@@ -307,7 +353,7 @@ export default function Navigation() {
       unsub?.();
       if (watchId != null) navigator.geolocation.clearWatch(watchId);
     };
-  }, [sessionId, navigate]);
+  }, [sessionId, navigate, isOfflineLocalSession]);
 
   const center = line[0] || [41.9, 12.5];
   const cumulativeDistances = useMemo(() => {
@@ -687,6 +733,7 @@ export default function Navigation() {
 
   useEffect(() => {
     if (startGate !== "ready") return;
+    if (isOfflineLocalSession) return;
     const interval = setInterval(async () => {
       await apiFetch(`/api/sessions/${sessionId}`, {
         method: "PATCH",
@@ -699,7 +746,7 @@ export default function Navigation() {
       });
     }, 10000);
     return () => clearInterval(interval);
-  }, [sessionId, completionPct, deviationsCount, actualTrack, startGate]);
+  }, [sessionId, completionPct, deviationsCount, actualTrack, startGate, isOfflineLocalSession]);
 
   function buildExitNavigationTarget() {
     const st = location.state;
@@ -724,15 +771,17 @@ export default function Navigation() {
   }
 
   async function finishSession() {
-    await apiFetch(`/api/sessions/${sessionId}/finish`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        completion_pct: completionPct,
-        deviations_count: deviationsCount,
-        actual_geom: actualTrack,
-      }),
-    });
+    if (!isOfflineLocalSession) {
+      await apiFetch(`/api/sessions/${sessionId}/finish`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          completion_pct: completionPct,
+          deviations_count: deviationsCount,
+          actual_geom: actualTrack,
+        }),
+      });
+    }
     sessionStorage.removeItem(navRuntimeStateKey());
     const target = buildExitNavigationTarget();
     navigate(target.pathname, { replace: true, state: target.state });
@@ -969,6 +1018,19 @@ export default function Navigation() {
             }}
           >
             {elevationBlock}
+            {isOfflineLocalSession && (
+              <Typography
+                sx={{
+                  mt: 0.4,
+                  px: 0.6,
+                  color: "#ffdca8",
+                  fontSize: "0.72rem",
+                  fontWeight: 700,
+                }}
+              >
+                Navigazione offline - sessione non salvata
+              </Typography>
+            )}
           </Box>
 
           <Box sx={{ width: "100%", flex: 1, position: "relative", minHeight: 0 }}>
@@ -1237,7 +1299,11 @@ export default function Navigation() {
             {t(lang, "pocketIntroBody")}
           </Typography>
           <FormControlLabel
-            sx={{ mt: 2, alignItems: "flex-start" }}
+            sx={{
+              mt: 2,
+              alignItems: "center",
+              "& .MuiFormControlLabel-label": { lineHeight: 1.25 },
+            }}
             control={
               <Checkbox
                 checked={pocketIntroSkipChecked}

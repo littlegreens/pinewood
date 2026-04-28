@@ -89,6 +89,7 @@ export default function MyTrails() {
     source: "",
     name: "",
     description: "",
+    route_type: "",
     difficulty: "",
     start_location_text: "",
     start_location_lat: "",
@@ -260,6 +261,7 @@ export default function MyTrails() {
       source: trail.source || "",
       name: trail.name || "",
       description: trail.description || "",
+      route_type: trail.route_type || "",
       difficulty: trail.difficulty || "",
       start_location_text: trail.start_location_text || "",
       start_location_lat: trail.start_location_lat ?? "",
@@ -289,6 +291,7 @@ export default function MyTrails() {
       : {
           name: editData.name,
           description: editData.description || null,
+          route_type: editData.route_type || null,
           difficulty: editData.difficulty || null,
           start_location_text: editData.start_location_text || null,
           start_location_lat: editData.start_location_lat === "" ? null : Number(editData.start_location_lat),
@@ -752,6 +755,12 @@ export default function MyTrails() {
                 label={t(lang, "difficulty")}
                 value={editData.difficulty}
                 onChange={(e) => setEditData((v) => ({ ...v, difficulty: e.target.value }))}
+                fullWidth
+              />
+              <TextField
+                label={t(lang, "routeType")}
+                value={editData.route_type}
+                onChange={(e) => setEditData((v) => ({ ...v, route_type: e.target.value }))}
                 fullWidth
               />
               <Stack direction="row" spacing={1}>

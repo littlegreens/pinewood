@@ -3,6 +3,8 @@ import { Alert, Box, Button, IconButton, InputAdornment, Paper, Stack, TextField
 import MyLocationRoundedIcon from "@mui/icons-material/MyLocationRounded";
 import CloseRoundedIcon from "@mui/icons-material/CloseRounded";
 import SearchIcon from "@mui/icons-material/Search";
+import NorthRoundedIcon from "@mui/icons-material/NorthRounded";
+import SouthRoundedIcon from "@mui/icons-material/SouthRounded";
 import L from "leaflet";
 import { MapContainer, Marker, Polyline, TileLayer, useMap, useMapEvents } from "react-leaflet";
 import { useNavigate } from "react-router-dom";
@@ -182,7 +184,10 @@ export default function MapDiscover() {
           distance_km: t.distance_km,
           estimated_time_minutes: t.estimated_time_minutes,
           difficulty: t.difficulty,
-          svg_preview: t.svg_preview,
+          elevation_gain_m: t.elevation_gain_m,
+          elevation_loss_m: t.elevation_loss_m,
+          max_elevation_m: t.max_elevation_m,
+          min_elevation_m: t.min_elevation_m,
           owner_name: t.owner_name,
           owner_avatar_url: t.owner_avatar_url,
           lat: Number(t.start_lat),
@@ -227,7 +232,19 @@ export default function MapDiscover() {
     const runReveal = async () => {
       setSelectedTrail(trail);
       if (pathCache.has(trail.id)) {
-        setSelectedTrailPath(pathCache.get(trail.id));
+        const cached = pathCache.get(trail.id);
+        setSelectedTrailPath(cached);
+        if (mapInstance && cached?.length >= 2) {
+          const bounds = L.latLngBounds(cached);
+          const bottomPad = Math.max(180, Math.round(cardHeight + 26));
+          mapInstance.flyToBounds(bounds, {
+            paddingTopLeft: [26, 26],
+            paddingBottomRight: [26, bottomPad],
+            maxZoom: 15,
+            animate: true,
+            duration: 0.45,
+          });
+        }
         return;
       }
       const res = await apiFetch(`/api/trails/${trail.id}`);
@@ -237,16 +254,18 @@ export default function MapDiscover() {
       if (!path || path.length < 2) return;
       pathCache.set(trail.id, path);
       setSelectedTrailPath(path);
+      if (mapInstance) {
+        const bounds = L.latLngBounds(path);
+        const bottomPad = Math.max(180, Math.round(cardHeight + 26));
+        mapInstance.flyToBounds(bounds, {
+          paddingTopLeft: [26, 26],
+          paddingBottomRight: [26, bottomPad],
+          maxZoom: 15,
+          animate: true,
+          duration: 0.45,
+        });
+      }
     };
-    if (mapInstance) {
-      const currentZoom = mapInstance.getZoom();
-      const targetZoom = Math.max(currentZoom, 13);
-      mapInstance.flyTo([trail.lat, trail.lon], targetZoom, { animate: true, duration: 0.35 });
-      mapInstance.once("moveend", () => {
-        void runReveal();
-      });
-      return;
-    }
     await runReveal();
   }
 
@@ -257,6 +276,11 @@ export default function MapDiscover() {
     const m = Math.round(total % 60);
     if (h <= 0) return `${m} min`;
     return `${h} h ${m} min`;
+  }
+
+  function formatMeters(value) {
+    if (!Number.isFinite(Number(value))) return "N/D";
+    return `${Math.round(Number(value))} m`;
   }
 
   const filteredPoints = useMemo(() => {
@@ -381,19 +405,7 @@ export default function MapDiscover() {
                 border: "1px solid #d9dee4",
               }}
             >
-              <Box sx={{ position: "relative", bgcolor: PREVIEW_BG, minHeight: 136 }}>
-                {selectedTrail.svg_preview ? (
-                  <Box
-                    sx={{
-                      width: "100%",
-                      lineHeight: 0,
-                      "& svg": { width: "100%", height: 136, display: "block" },
-                    }}
-                    dangerouslySetInnerHTML={{ __html: selectedTrail.svg_preview }}
-                  />
-                ) : (
-                  <Box sx={{ height: 136, bgcolor: PREVIEW_BG }} />
-                )}
+              <Box sx={{ position: "relative" }}>
                 <IconButton
                   onClick={() => {
                     setSelectedTrail(null);
@@ -401,8 +413,8 @@ export default function MapDiscover() {
                   }}
                   sx={{
                     position: "absolute",
-                    top: 6,
-                    right: 6,
+                    top: 8,
+                    right: 8,
                     bgcolor: "transparent",
                     "&:hover": { bgcolor: "transparent" },
                   }}
@@ -410,22 +422,11 @@ export default function MapDiscover() {
                   <CloseRoundedIcon sx={{ fontSize: 24 }} />
                 </IconButton>
               </Box>
-              <Box sx={{ p: 1.25 }}>
-                <Typography sx={{ fontWeight: 800, fontSize: "1rem", lineHeight: 1.2, mb: 0.8 }}>
+              <Box sx={{ p: "18px" }}>
+                <Typography sx={{ fontWeight: 800, fontSize: "1rem", lineHeight: 1.2, mb: 0.8, pr: 4.5 }}>
                   {selectedTrail.name}
                 </Typography>
-                <Box sx={{ display: "flex", alignItems: "center", gap: 0.7, mb: 0.9 }}>
-                  <Box
-                    component="img"
-                    src={selectedTrail.owner_avatar_url ? `${API}${selectedTrail.owner_avatar_url}` : "/avatar.svg"}
-                    alt={selectedTrail.owner_name || "Pinewood"}
-                    sx={{ width: 20, height: 20, borderRadius: "50%", objectFit: "cover", bgcolor: "#fff" }}
-                  />
-                  <Typography variant="caption" color="text.secondary">
-                    Caricato da {selectedTrail.owner_name || "Pinewood"}
-                  </Typography>
-                </Box>
-                <Stack direction="row" spacing={1.1} sx={{ flexWrap: "wrap", mb: 1.2 }}>
+                <Box sx={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 0.8, mb: 1.05 }}>
                   {selectedTrail.distance_km != null && (
                     <Typography variant="body2" color="text.secondary">
                       {Number(selectedTrail.distance_km).toFixed(2).replace(".", ",")} km
@@ -433,16 +434,39 @@ export default function MapDiscover() {
                   )}
                   {selectedTrail.estimated_time_minutes != null && (
                     <Typography variant="body2" color="text.secondary">
-                      {formatMinutesToHours(selectedTrail.estimated_time_minutes)}
+                      | {formatMinutesToHours(selectedTrail.estimated_time_minutes)}
+                    </Typography>
+                  )}
+                  {(selectedTrail.elevation_gain_m != null || selectedTrail.elevation_loss_m != null) && (
+                    <Typography
+                      variant="body2"
+                      color="text.secondary"
+                      sx={{ display: "inline-flex", alignItems: "center", gap: 0.2 }}
+                    >
+                      | <NorthRoundedIcon sx={{ fontSize: 15 }} />
+                      {selectedTrail.elevation_gain_m ?? "-"}m
+                      <SouthRoundedIcon sx={{ fontSize: 15, ml: 0.2 }} />
+                      {selectedTrail.elevation_loss_m ?? selectedTrail.elevation_gain_m ?? "-"}m
                     </Typography>
                   )}
                   {selectedTrail.difficulty && (
                     <Typography variant="body2" color="text.secondary">
-                      {selectedTrail.difficulty}
+                      | {selectedTrail.difficulty}
                     </Typography>
                   )}
-                </Stack>
-                <Box sx={{ display: "flex", justifyContent: "flex-end" }}>
+                </Box>
+                <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 1 }}>
+                  <Box sx={{ display: "flex", alignItems: "center", gap: 0.7 }}>
+                    <Box
+                      component="img"
+                      src={selectedTrail.owner_avatar_url ? `${API}${selectedTrail.owner_avatar_url}` : "/avatar.svg"}
+                      alt={selectedTrail.owner_name || "Pinewood"}
+                      sx={{ width: 20, height: 20, borderRadius: "50%", objectFit: "cover", bgcolor: "#fff" }}
+                    />
+                    <Typography variant="caption" color="text.secondary">
+                      Caricato da {selectedTrail.owner_name || "Pinewood"}
+                    </Typography>
+                  </Box>
                   <Button
                     variant="contained"
                     onClick={() =>

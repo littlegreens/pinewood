@@ -55,6 +55,16 @@ const QUILL_MODULES = {
   ],
 };
 const QUILL_FORMATS = ["bold", "italic", "underline", "link", "list", "bullet"];
+const OFFLINE_TRAIL_KEY_PREFIX = "pw_trail_";
+const LEGACY_OFFLINE_TRAIL_KEY_PREFIX = "pinewood_offline_trail_";
+
+function offlineTrailStorageKey(trailId) {
+  return `${OFFLINE_TRAIL_KEY_PREFIX}${String(trailId)}`;
+}
+
+function legacyOfflineTrailStorageKey(trailId) {
+  return `${LEGACY_OFFLINE_TRAIL_KEY_PREFIX}${String(trailId)}`;
+}
 
 function readStoredUser() {
   const raw = localStorage.getItem("pinewood_user");
@@ -149,6 +159,7 @@ export default function TrailDetail() {
   const [editData, setEditData] = useState({
     name: "",
     description: "",
+    route_type: "",
     difficulty: "",
     start_location_text: "",
     start_location_lat: "",
@@ -261,6 +272,17 @@ export default function TrailDetail() {
         tail: rawDescription.slice(-140),
       });
       if (active) setTrail(data);
+      const offlinePayload = {
+        trailId: String(data?.id || trailId),
+        savedAt: Date.now(),
+        trailName: data?.name || "",
+        geom_geojson: data?.geom_geojson || null,
+        elevation_profile: Array.isArray(data?.elevation_profile) ? data.elevation_profile : [],
+        parse_status: data?.parse_status || null,
+        waypoints: Array.isArray(data?.waypoints) ? data.waypoints : [],
+      };
+      localStorage.setItem(offlineTrailStorageKey(trailId), JSON.stringify(offlinePayload));
+      localStorage.removeItem(legacyOfflineTrailStorageKey(trailId));
     }
     load();
     return () => {
@@ -339,6 +361,7 @@ export default function TrailDetail() {
     setEditData({
       name: trail.name || "",
       description: trail.description || "",
+      route_type: trail.route_type || "",
       difficulty: trail.difficulty || "",
       start_location_text: trail.start_location_text || "",
       start_location_lat: trail.start_location_lat ?? "",
@@ -411,6 +434,19 @@ export default function TrailDetail() {
     return 2 * R * Math.atan2(Math.sqrt(x), Math.sqrt(1 - x));
   }
 
+  function buildOfflineTrailPayload() {
+    if (!trail) return null;
+    return {
+      trailId: String(trail.id || trailId),
+      savedAt: Date.now(),
+      trailName: trail.name || "",
+      geom_geojson: trail.geom_geojson || null,
+      elevation_profile: Array.isArray(trail.elevation_profile) ? trail.elevation_profile : [],
+      parse_status: trail.parse_status || null,
+      waypoints: Array.isArray(trail.waypoints) ? trail.waypoints : [],
+    };
+  }
+
   async function startNavigation() {
     if (isGuest) {
       setPlayAlert({ type: "warning", text: t(lang, "guestPlayNotAllowed") });
@@ -441,6 +477,45 @@ export default function TrailDetail() {
       const initialPosition = getLastKnownLocation();
       // Keep location tracker warm, but never block the transition on GPS.
       void requestQuickLocation({ timeoutMs: 3500 });
+      if (!navigator.onLine) {
+        const raw =
+          localStorage.getItem(offlineTrailStorageKey(trailId)) ||
+          localStorage.getItem(legacyOfflineTrailStorageKey(trailId));
+        if (!raw) {
+          setPlayAlert({
+            type: "warning",
+            text: "Questo percorso non è disponibile offline. Aprilo e premi ‘Scarica offline’ quando hai rete.",
+          });
+          return;
+        }
+        let offlineTrail = null;
+        try {
+          offlineTrail = JSON.parse(raw);
+        } catch {
+          localStorage.removeItem(offlineTrailStorageKey(trailId));
+        }
+        const hasLine = Boolean(offlineTrail?.geom_geojson?.coordinates?.length);
+        if (!hasLine) {
+          setPlayAlert({
+            type: "warning",
+            text: "Questo percorso non è disponibile offline. Aprilo e premi ‘Scarica offline’ quando hai rete.",
+          });
+          return;
+        }
+        const localSessionId = `local_${String(trailId)}_${Date.now()}`;
+        navigate(`/app/navigation/${localSessionId}`, {
+          replace: true,
+          state: {
+            fromTrailDetail: true,
+            trailId: String(trailId),
+            backTo: resolveBackTarget(),
+            initialPosition,
+            offlineSession: true,
+            offlineTrail,
+          },
+        });
+        return;
+      }
       const isStandalone =
         window.matchMedia?.("(display-mode: standalone)")?.matches || window.navigator.standalone === true;
       const res = await apiFetch("/api/sessions", {
@@ -465,6 +540,8 @@ export default function TrailDetail() {
       // Continue offline warmup in background after route transition.
       void warmupTilesForLine(line, { installedPwa: Boolean(isStandalone) });
     } catch {
+      // handled by UI alert paths
+    } finally {
       setPlayStarting(false);
     }
   }
@@ -483,6 +560,11 @@ export default function TrailDetail() {
           text: "Non sono riuscito a preparare la mappa offline adesso. Riprova con una rete migliore.",
         });
         return;
+      }
+      const payload = buildOfflineTrailPayload();
+      if (payload) {
+        localStorage.setItem(offlineTrailStorageKey(trailId), JSON.stringify(payload));
+        localStorage.removeItem(legacyOfflineTrailStorageKey(trailId));
       }
       setOfflineDialog({
         open: true,
@@ -504,10 +586,12 @@ export default function TrailDetail() {
             editData.start_location_lat === "" ? null : Number(editData.start_location_lat),
           start_location_lon:
             editData.start_location_lon === "" ? null : Number(editData.start_location_lon),
+          is_public: editData.is_public,
         }
       : {
           name: editData.name,
           description: editData.description || null,
+          route_type: editData.route_type || null,
           difficulty: editData.difficulty || null,
           start_location_text: editData.start_location_text || null,
           start_location_lat:
@@ -909,14 +993,14 @@ export default function TrailDetail() {
             {(trail.min_elevation_m != null || trail.max_elevation_m != null) && (
               <Box sx={{ display: "flex", justifyContent: "flex-start", gap: 2.2, flexWrap: "wrap" }}>
                 {trail.min_elevation_m != null && (
-                    <Typography sx={{ color: "#fff", fontSize: "0.98rem", px: 1.6 }}>
-                      <LandscapeRoundedIcon sx={{ fontSize: 16, verticalAlign: "text-bottom", mr: 0.3, color: "#fff" }} />
+                    <Typography sx={{ color: "#fff", fontSize: "0.98rem", px: 1.6, display: "inline-flex", alignItems: "center", gap: 0.3 }}>
+                      <LandscapeRoundedIcon sx={{ fontSize: 18, color: "#fff" }} />
                       <strong>Min:</strong> {formatMeters(trail.min_elevation_m)}
                     </Typography>
                 )}
                 {trail.max_elevation_m != null && (
-                    <Typography sx={{ color: "#fff", fontSize: "0.98rem", px: 1.6 }}>
-                      <LandscapeRoundedIcon sx={{ fontSize: 21, verticalAlign: "text-bottom", mr: 0.35, color: "#fff" }} />
+                    <Typography sx={{ color: "#fff", fontSize: "0.98rem", px: 1.6, display: "inline-flex", alignItems: "center", gap: 0.3 }}>
+                      <LandscapeRoundedIcon sx={{ fontSize: 18, color: "#fff" }} />
                       <strong>Max:</strong> {formatMeters(trail.max_elevation_m)}
                     </Typography>
                 )}
@@ -931,7 +1015,7 @@ export default function TrailDetail() {
                 )}
                 {line.length > 0 && (
                   <Typography sx={{ color: "#fff", fontSize: "0.98rem", px: 1.6 }}>
-                    <strong>Tipo:</strong> {detectRouteType()}
+                    <strong>Tipo:</strong> {trail.route_type || detectRouteType()}
                   </Typography>
                 )}
               </Stack>
@@ -1205,6 +1289,12 @@ export default function TrailDetail() {
                 label={t(lang, "difficulty")}
                 value={editData.difficulty}
                 onChange={(e) => setEditData((v) => ({ ...v, difficulty: e.target.value }))}
+                fullWidth
+              />
+              <TextField
+                label={t(lang, "routeType")}
+                value={editData.route_type}
+                onChange={(e) => setEditData((v) => ({ ...v, route_type: e.target.value }))}
                 fullWidth
               />
               <Stack direction="row" spacing={1}>

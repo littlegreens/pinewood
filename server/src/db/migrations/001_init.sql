@@ -112,4 +112,3 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_trails_osm_id_unique
   WHERE osm_id IS NOT NULL;
 
 ALTER TABLE trails ALTER COLUMN is_public SET DEFAULT true;
-UPDATE trails SET is_public = true WHERE is_public = false;

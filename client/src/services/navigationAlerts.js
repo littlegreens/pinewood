@@ -45,7 +45,8 @@ export function vibrateOffRoutePulse() {
   try {
     const v = navigator?.vibrate;
     if (typeof v !== "function") return;
-    v.call(navigator, [140, 60, 140]);
+    // Pulse piu evidente, simile a uno "squillo breve".
+    v.call(navigator, [220, 110, 220, 110, 280]);
   } catch {
     /* ignore */
   }

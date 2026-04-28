@@ -30,6 +30,13 @@ async function ensureTrailSourceWebsiteColumn() {
   );
 }
 
+async function ensureTrailRouteTypeColumn() {
+  await pool.query(
+    `ALTER TABLE trails
+     ADD COLUMN IF NOT EXISTS route_type varchar(30)`
+  );
+}
+
 router.get("/", authMiddleware, async (req, res) => {
   const result = await pool.query(
     `SELECT
@@ -240,6 +247,7 @@ router.get("/:id", optionalAuthMiddleware, async (req, res) => {
         t.name,
         t.description,
         t.source_website_url,
+        t.route_type,
         t.distance_km,
         t.difficulty,
         t.svg_preview,
@@ -316,8 +324,10 @@ router.patch("/:id", authMiddleware, async (req, res) => {
     min_elevation_m,
     is_public,
     source_website_url,
+    route_type,
   } = req.body ?? {};
   await ensureTrailSourceWebsiteColumn();
+  await ensureTrailRouteTypeColumn();
 
 
   const trailCheck = await pool.query(
@@ -344,7 +354,8 @@ router.patch("/:id", authMiddleware, async (req, res) => {
            start_location_lat = COALESCE($3, start_location_lat),
            start_location_lon = COALESCE($4, start_location_lon),
            source_website_url = COALESCE($5, source_website_url),
-           is_public = CASE WHEN $6::boolean IS NULL THEN is_public ELSE $6::boolean END
+           route_type = COALESCE($6, route_type),
+           is_public = CASE WHEN $7::boolean IS NULL THEN is_public ELSE $7::boolean END
        WHERE id = $1`,
       [
         req.params.id,
@@ -352,6 +363,7 @@ router.patch("/:id", authMiddleware, async (req, res) => {
         start_location_lat,
         start_location_lon,
         source_website_url,
+        route_type,
         is_public,
       ]
     );
@@ -372,7 +384,8 @@ router.patch("/:id", authMiddleware, async (req, res) => {
          max_elevation_m = COALESCE($11, max_elevation_m),
          min_elevation_m = COALESCE($12, min_elevation_m),
          is_public = CASE WHEN $13::boolean IS NULL THEN is_public ELSE $13::boolean END,
-         source_website_url = COALESCE($14, source_website_url)
+         source_website_url = COALESCE($14, source_website_url),
+         route_type = COALESCE($15, route_type)
      WHERE id = $1`,
     [
       req.params.id,
@@ -389,6 +402,7 @@ router.patch("/:id", authMiddleware, async (req, res) => {
       min_elevation_m,
       is_public,
       source_website_url,
+      route_type,
     ]
   );
   return res.json({ ok: true });
