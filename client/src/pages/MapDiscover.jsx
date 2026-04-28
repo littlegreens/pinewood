@@ -6,18 +6,19 @@ import SearchIcon from "@mui/icons-material/Search";
 import NorthRoundedIcon from "@mui/icons-material/NorthRounded";
 import SouthRoundedIcon from "@mui/icons-material/SouthRounded";
 import L from "leaflet";
-import { MapContainer, Marker, Polyline, TileLayer, useMap, useMapEvents } from "react-leaflet";
+import { MapContainer, Polyline, TileLayer, useMap } from "react-leaflet";
 import { useNavigate } from "react-router-dom";
 import InternalHeader from "../components/InternalHeader.jsx";
 import { apiFetch } from "../services/api.js";
+import "leaflet.markercluster";
+import "leaflet.markercluster/dist/MarkerCluster.css";
+import "leaflet.markercluster/dist/MarkerCluster.Default.css";
 
-const CLUSTER_GRID_PX = 56;
 const INITIAL_CENTER = [42.7, 12.6];
 const INITIAL_ZOOM = 10;
-const DETAIL_ZOOM_THRESHOLD = 13;
 const MAP_OVERLAY_ZINDEX = 1200;
-const PREVIEW_BG = "#c8ddc8";
 const API = import.meta.env.VITE_API_URL || "";
+const MAP_DEBUG_NS = "[map.debug]";
 
 function FitAllPoints({ points }) {
   const map = useMap();
@@ -35,97 +36,148 @@ function FitAllPoints({ points }) {
 
 function ClusterLayer({ points, selectedTrailId, onRevealTrail }) {
   const map = useMap();
-  const [renderItems, setRenderItems] = useState([]);
-
-  useMapEvents({
-    moveend: recompute,
-    zoomend: recompute,
-  });
+  const clusterLayerRef = useRef(null);
 
   useEffect(() => {
-    recompute();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [points]);
-
-  function recompute() {
-    const zoom = map.getZoom();
-    const bounds = map.getBounds().pad(0.25);
-    const visible = points.filter((p) => bounds.contains([p.lat, p.lon]));
-    if (zoom >= DETAIL_ZOOM_THRESHOLD) {
-      setRenderItems(visible.map((p) => ({ type: "point", items: [p], lat: p.lat, lon: p.lon })));
-      return;
-    }
-    const buckets = new Map();
-    for (const p of visible) {
-      const projected = map.project([p.lat, p.lon], zoom);
-      const keyX = Math.floor(projected.x / CLUSTER_GRID_PX);
-      const keyY = Math.floor(projected.y / CLUSTER_GRID_PX);
-      const key = `${keyX}:${keyY}`;
-      const bucket = buckets.get(key) || [];
-      bucket.push(p);
-      buckets.set(key, bucket);
-    }
-    const clusters = [];
-    for (const items of buckets.values()) {
-      if (items.length === 1) {
-        clusters.push({ type: "point", items, lat: items[0].lat, lon: items[0].lon });
-        continue;
+    const group = L.markerClusterGroup({
+      spiderfyOnMaxZoom: true,
+      showCoverageOnHover: false,
+      zoomToBoundsOnClick: false,
+      removeOutsideVisibleBounds: true,
+      maxClusterRadius: 52,
+      iconCreateFunction(cluster) {
+        return L.divIcon({
+          className: "pinewood-cluster-icon",
+          html: `<div style="width:36px;height:36px;border-radius:50%;background:#2d4f1e;color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:0.88rem;border:2px solid #ffffff;box-shadow:0 2px 8px rgba(0,0,0,0.28);">${cluster.getChildCount()}</div>`,
+          iconSize: [36, 36],
+          iconAnchor: [18, 18],
+        });
+      },
+    });
+    group.on("clusterclick", (event) => {
+      const cluster = event.layer;
+      if (!cluster) return;
+      const currentZoom = map.getZoom();
+      const beforeCenter = map.getCenter();
+      const childCount = typeof cluster.getChildCount === "function" ? cluster.getChildCount() : null;
+      console.info(`${MAP_DEBUG_NS} clusterclick`, {
+        currentZoom,
+        childCount,
+        center: cluster.getLatLng?.(),
+      });
+      map.stop();
+      // Forza una risposta deterministica: prima zoom sui bounds, poi spiderfy quando siamo gia vicini.
+      if (currentZoom >= 15) {
+        console.info(`${MAP_DEBUG_NS} clusterclick spiderfy`, { reason: "already_near_max_zoom" });
+        cluster.spiderfy();
+        return;
       }
-      const lat = items.reduce((sum, it) => sum + it.lat, 0) / items.length;
-      const lon = items.reduce((sum, it) => sum + it.lon, 0) / items.length;
-      clusters.push({ type: "cluster", items, lat, lon });
-    }
-    setRenderItems(clusters);
-  }
+      const bounds = cluster.getBounds?.();
+      if (bounds?.isValid?.()) {
+        console.info(`${MAP_DEBUG_NS} clusterclick flyToBounds`, {
+          maxZoom: 15,
+          southWest: bounds.getSouthWest?.(),
+          northEast: bounds.getNorthEast?.(),
+        });
+        map.flyToBounds(bounds, {
+          maxZoom: 15,
+          animate: true,
+          duration: 0.35,
+        });
+        return;
+      }
+      const center = cluster.getLatLng?.();
+      if (center) {
+        console.info(`${MAP_DEBUG_NS} clusterclick flyToCenter`, {
+          targetZoom: Math.max(currentZoom + 2, 14),
+          center,
+        });
+        map.flyTo(center, Math.max(currentZoom + 2, 14), {
+          animate: true,
+          duration: 0.35,
+        });
+      }
 
-  return (
-    <>
-      {renderItems.map((item, idx) => {
-        if (item.type === "cluster") {
-          const icon = L.divIcon({
-            className: "pinewood-cluster-icon",
-            html: `<div style="width:36px;height:36px;border-radius:50%;background:#2d4f1e;color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:0.88rem;border:2px solid #ffffff;box-shadow:0 2px 8px rgba(0,0,0,0.28);">${item.items.length}</div>`,
-            iconSize: [36, 36],
-            iconAnchor: [18, 18],
+      // Watchdog: se il primo click non produce movimento reale, ritenta una volta in automatico.
+      window.setTimeout(() => {
+        const afterZoom = map.getZoom();
+        const afterCenter = map.getCenter();
+        const centerShift = beforeCenter.distanceTo(afterCenter);
+        const movedEnough = afterZoom > currentZoom || centerShift > 8;
+        console.info(`${MAP_DEBUG_NS} clusterclick watchdog`, {
+          beforeZoom: currentZoom,
+          afterZoom,
+          centerShiftMeters: Math.round(centerShift),
+          movedEnough,
+        });
+        if (movedEnough) return;
+        const retryBounds = cluster.getBounds?.();
+        if (retryBounds?.isValid?.()) {
+          console.info(`${MAP_DEBUG_NS} clusterclick retry flyToBounds`);
+          map.stop();
+          map.flyToBounds(retryBounds, {
+            maxZoom: 15,
+            animate: true,
+            duration: 0.3,
           });
-          return (
-            <Marker
-              key={`cluster-${idx}`}
-              position={[item.lat, item.lon]}
-              icon={icon}
-              eventHandlers={{
-                click: () => {
-                  map.setView([item.lat, item.lon], Math.min(map.getZoom() + 2, DETAIL_ZOOM_THRESHOLD), {
-                    animate: true,
-                  });
-                },
-              }}
-            />
-          );
+          return;
         }
-        const trail = item.items[0];
-        const isSelected = trail.id === selectedTrailId;
-        const icon = L.divIcon({
+        const retryCenter = cluster.getLatLng?.();
+        if (retryCenter) {
+          console.info(`${MAP_DEBUG_NS} clusterclick retry flyToCenter`, {
+            targetZoom: Math.max(currentZoom + 2, 14),
+          });
+          map.stop();
+          map.flyTo(retryCenter, Math.max(currentZoom + 2, 14), {
+            animate: true,
+            duration: 0.3,
+          });
+        }
+      }, 450);
+    });
+    clusterLayerRef.current = group;
+    map.addLayer(group);
+    return () => {
+      group.off("clusterclick");
+      map.removeLayer(group);
+      clusterLayerRef.current = null;
+    };
+  }, [map]);
+
+  useEffect(() => {
+    const group = clusterLayerRef.current;
+    if (!group) return;
+    group.clearLayers();
+    console.info(`${MAP_DEBUG_NS} markers render`, {
+      pointsCount: points.length,
+      selectedTrailId,
+    });
+
+    for (const trail of points) {
+      const isSelected = trail.id === selectedTrailId;
+      const marker = L.marker([trail.lat, trail.lon], {
+        icon: L.divIcon({
           className: "pinewood-point-icon",
           html: `<img src="/explore.svg" alt="" style="width:${isSelected ? 32 : 26}px;height:${isSelected ? 32 : 26}px;display:block;filter:drop-shadow(0 2px 8px rgba(0,0,0,0.25));" />`,
           iconSize: [isSelected ? 32 : 26, isSelected ? 32 : 26],
           iconAnchor: [isSelected ? 16 : 13, isSelected ? 16 : 13],
+        }),
+      });
+      marker.on("click", () => {
+        console.info(`${MAP_DEBUG_NS} marker click`, {
+          trailId: trail.id,
+          name: trail.name,
+          lat: trail.lat,
+          lon: trail.lon,
+          currentZoom: map.getZoom(),
         });
-        return (
-          <Marker
-            key={`point-${trail.id}`}
-            position={[trail.lat, trail.lon]}
-            icon={icon}
-            eventHandlers={{
-              click: () => {
-                  onRevealTrail?.(trail, map);
-              },
-            }}
-          />
-        );
-      })}
-    </>
-  );
+        onRevealTrail?.(trail, map);
+      });
+      group.addLayer(marker);
+    }
+  }, [map, onRevealTrail, points, selectedTrailId]);
+
+  return null;
 }
 
 function LocateControl({ onLocate }) {
@@ -146,16 +198,25 @@ function LocateControl({ onLocate }) {
   return null;
 }
 
-function KeepSelectedPointVisible({ target, cardHeight }) {
+function KeepSelectedPointVisible({ target, cardHeight, hasSelectedPath = false }) {
   const map = useMap();
   useEffect(() => {
+    // Se abbiamo gia la polyline selezionata, la camera e gia gestita da flyToBounds.
+    // Evitiamo un flyTo aggiuntivo che puo "schiacciare" lo zoom appena applicato.
+    if (hasSelectedPath) return;
     if (!target || !Number.isFinite(target.lat) || !Number.isFinite(target.lon)) return;
     const zoom = map.getZoom();
     const targetPoint = map.project([target.lat, target.lon], zoom);
     const upwardOffsetPx = Math.max(0, Math.round(cardHeight / 2) - 30);
     const nextCenter = map.unproject(L.point(targetPoint.x, targetPoint.y + upwardOffsetPx), zoom);
+    console.info(`${MAP_DEBUG_NS} keepSelectedVisible`, {
+      trailId: target.id,
+      zoom,
+      cardHeight,
+      upwardOffsetPx,
+    });
     map.flyTo(nextCenter, zoom, { animate: true, duration: 0.35 });
-  }, [map, target?.id, target?.lat, target?.lon, cardHeight]);
+  }, [map, target?.id, target?.lat, target?.lon, cardHeight, hasSelectedPath]);
   return null;
 }
 
@@ -229,42 +290,91 @@ export default function MapDiscover() {
   }
 
   async function revealTrailOnMap(trail, mapInstance) {
+    function focusMarkerFallback() {
+      if (!mapInstance) return;
+      mapInstance.stop();
+      mapInstance.flyTo([trail.lat, trail.lon], Math.max(mapInstance.getZoom(), 14), {
+        animate: true,
+        duration: 0.35,
+      });
+    }
+
+    function focusTrailPath(path) {
+      if (!mapInstance || !Array.isArray(path) || path.length < 2) {
+        focusMarkerFallback();
+        return;
+      }
+      const validPath = path.filter(
+        (pt) => Array.isArray(pt) && pt.length === 2 && Number.isFinite(pt[0]) && Number.isFinite(pt[1])
+      );
+      if (validPath.length < 2) {
+        focusMarkerFallback();
+        return;
+      }
+      const bounds = L.latLngBounds(validPath);
+      if (!bounds.isValid()) {
+        focusMarkerFallback();
+        return;
+      }
+      const bottomPad = Math.max(180, Math.round(cardHeight + 26));
+      mapInstance.stop();
+      mapInstance.flyToBounds(bounds, {
+        paddingTopLeft: [26, 26],
+        paddingBottomRight: [26, bottomPad],
+        maxZoom: 15,
+        animate: true,
+        duration: 0.45,
+      });
+    }
+
     const runReveal = async () => {
+      console.info(`${MAP_DEBUG_NS} reveal start`, {
+        trailId: trail.id,
+        trailName: trail.name,
+        hasCachedPath: pathCache.has(trail.id),
+      });
       setSelectedTrail(trail);
+      // Feedback immediato al click: evita la sensazione di "blocco".
+      focusMarkerFallback();
       if (pathCache.has(trail.id)) {
         const cached = pathCache.get(trail.id);
         setSelectedTrailPath(cached);
-        if (mapInstance && cached?.length >= 2) {
-          const bounds = L.latLngBounds(cached);
-          const bottomPad = Math.max(180, Math.round(cardHeight + 26));
-          mapInstance.flyToBounds(bounds, {
-            paddingTopLeft: [26, 26],
-            paddingBottomRight: [26, bottomPad],
-            maxZoom: 15,
-            animate: true,
-            duration: 0.45,
-          });
-        }
+        console.info(`${MAP_DEBUG_NS} reveal cached path`, {
+          trailId: trail.id,
+          points: Array.isArray(cached) ? cached.length : 0,
+        });
+        focusTrailPath(cached);
         return;
       }
       const res = await apiFetch(`/api/trails/${trail.id}`);
-      if (!res.ok) return;
+      if (!res.ok) {
+        console.warn(`${MAP_DEBUG_NS} reveal fetch fail`, {
+          trailId: trail.id,
+          status: res.status,
+        });
+        setNotice("Non riesco a caricare il percorso adesso.");
+        return;
+      }
       const detail = await res.json();
       const path = toLatLngPath(detail.geom_geojson);
-      if (!path || path.length < 2) return;
+      if (!path || path.length < 2) {
+        console.warn(`${MAP_DEBUG_NS} reveal invalid path`, {
+          trailId: trail.id,
+          geomType: detail?.geom_geojson?.type,
+          coordsCount: Array.isArray(detail?.geom_geojson?.coordinates)
+            ? detail.geom_geojson.coordinates.length
+            : null,
+        });
+        setNotice("Tracciato non disponibile per questo percorso.");
+        return;
+      }
+      console.info(`${MAP_DEBUG_NS} reveal fetched path`, {
+        trailId: trail.id,
+        points: path.length,
+      });
       pathCache.set(trail.id, path);
       setSelectedTrailPath(path);
-      if (mapInstance) {
-        const bounds = L.latLngBounds(path);
-        const bottomPad = Math.max(180, Math.round(cardHeight + 26));
-        mapInstance.flyToBounds(bounds, {
-          paddingTopLeft: [26, 26],
-          paddingBottomRight: [26, bottomPad],
-          maxZoom: 15,
-          animate: true,
-          duration: 0.45,
-        });
-      }
+      focusTrailPath(path);
     };
     await runReveal();
   }
@@ -290,6 +400,7 @@ export default function MapDiscover() {
   }, [items, query]);
 
   function closeSelections() {
+    console.info(`${MAP_DEBUG_NS} close selections`);
     setSelectedTrail(null);
     setSelectedTrailPath(null);
   }
@@ -315,7 +426,11 @@ export default function MapDiscover() {
           />
           <LocateControl onLocate={locateAction} />
           <FitAllPoints points={items} />
-          <KeepSelectedPointVisible target={selectedTrail} cardHeight={cardHeight} />
+          <KeepSelectedPointVisible
+            target={selectedTrail}
+            cardHeight={cardHeight}
+            hasSelectedPath={Boolean(selectedTrailPath?.length)}
+          />
           <ClusterLayer
             points={filteredPoints}
             selectedTrailId={selectedTrailId}
