@@ -76,6 +76,26 @@ function bearingDeg(a, b) {
   return ((Math.atan2(y, x) * 180) / Math.PI + 360) % 360;
 }
 
+function normalizeAngleDeg(v) {
+  return ((v % 360) + 360) % 360;
+}
+
+function shortestAngleDeltaDeg(from, to) {
+  const a = normalizeAngleDeg(from);
+  const b = normalizeAngleDeg(to);
+  let d = b - a;
+  if (d > 180) d -= 360;
+  if (d < -180) d += 360;
+  return d;
+}
+
+function smoothHeadingDeg(prev, next, alpha = 0.22) {
+  if (typeof prev !== "number" || Number.isNaN(prev)) return normalizeAngleDeg(next);
+  if (typeof next !== "number" || Number.isNaN(next)) return normalizeAngleDeg(prev);
+  const delta = shortestAngleDeltaDeg(prev, next);
+  return normalizeAngleDeg(prev + delta * alpha);
+}
+
 function NavigationUserMarker({ position, headingDeg }) {
   const icon = useMemo(() => {
     const hasHeading = typeof headingDeg === "number" && !Number.isNaN(headingDeg);
@@ -92,6 +112,10 @@ function NavigationUserMarker({ position, headingDeg }) {
     });
   }, [headingDeg]);
   return <Marker position={position} icon={icon} />;
+}
+
+function isLeafletMapUsable(map) {
+  return Boolean(map && typeof map.stop === "function" && map._loaded && map._mapPane);
 }
 
 export default function Navigation() {
@@ -286,38 +310,46 @@ export default function Navigation() {
       setPosition((prev) => prev || snapshot.position);
     });
     let watchId;
+    let cancelled = false;
     prevPosRef.current = null;
     lastHeadingRef.current = null;
     setUserHeading(null);
     async function load() {
+      if (cancelled) return;
       if (isOfflineLocalSession) {
         const offlineData = getOfflineTrailPayload();
         const coords = offlineData?.geom_geojson?.coordinates || [];
         if (!coords.length) {
           const target = location.state?.trailId ? `/app/trails/${location.state.trailId}` : "/app";
+          if (cancelled) return;
           navigate(target, { replace: true });
           return;
         }
+        if (cancelled) return;
         setLine(coords.map(([lon, lat]) => [lat, lon]));
         setElevationProfile(Array.isArray(offlineData?.elevation_profile) ? offlineData.elevation_profile : []);
         setParseStatus(offlineData?.parse_status || null);
         setWaypoints(Array.isArray(offlineData?.waypoints) ? offlineData.waypoints : []);
       } else {
-      const res = await apiFetch(`/api/sessions/${sessionId}`);
-      if (res.status === 401) {
-        navigate("/");
-        return;
+        const res = await apiFetch(`/api/sessions/${sessionId}`);
+        if (cancelled) return;
+        if (res.status === 401) {
+          navigate("/");
+          return;
+        }
+        if (!res.ok) return;
+        const data = await res.json();
+        if (cancelled) return;
+        const coords = data?.geom_geojson?.coordinates || [];
+        setLine(coords.map(([lon, lat]) => [lat, lon]));
+        setElevationProfile(Array.isArray(data?.elevation_profile) ? data.elevation_profile : []);
+        setParseStatus(data?.parse_status || null);
+        setWaypoints(Array.isArray(data?.waypoints) ? data.waypoints : []);
       }
-      if (!res.ok) return;
-      const data = await res.json();
-      const coords = data?.geom_geojson?.coordinates || [];
-      setLine(coords.map(([lon, lat]) => [lat, lon]));
-      setElevationProfile(Array.isArray(data?.elevation_profile) ? data.elevation_profile : []);
-      setParseStatus(data?.parse_status || null);
-      setWaypoints(Array.isArray(data?.waypoints) ? data.waypoints : []);
-      }
+      if (cancelled) return;
       watchId = navigator.geolocation.watchPosition(
         (p) => {
+          if (cancelled) return;
           const lat = p.coords.latitude;
           const lon = p.coords.longitude;
           const pos = [lat, lon];
@@ -338,7 +370,9 @@ export default function Navigation() {
           if (h == null) {
             h = lastHeadingRef.current;
           } else {
-            lastHeadingRef.current = h;
+            const smoothed = smoothHeadingDeg(lastHeadingRef.current, h);
+            lastHeadingRef.current = smoothed;
+            h = smoothed;
           }
           prevPosRef.current = pos;
           setPosition(pos);
@@ -350,10 +384,11 @@ export default function Navigation() {
     }
     load();
     return () => {
+      cancelled = true;
       unsub?.();
       if (watchId != null) navigator.geolocation.clearWatch(watchId);
     };
-  }, [sessionId, navigate, isOfflineLocalSession]);
+  }, [sessionId, navigate, isOfflineLocalSession, location.state]);
 
   const center = line[0] || [41.9, 12.5];
   const cumulativeDistances = useMemo(() => {
@@ -674,6 +709,8 @@ export default function Navigation() {
 
   useEffect(() => {
     if (!mapInstance || line.length === 0) return;
+    if (pocketMode) return;
+    if (!isLeafletMapUsable(mapInstance)) return;
     setShowTrailLine(false);
     centeredOnStartRef.current = false;
 
@@ -700,10 +737,12 @@ export default function Navigation() {
     return () => {
       mapInstance.off("moveend", onMoveEnd);
     };
-  }, [mapInstance, line, position]);
+  }, [mapInstance, line, position, pocketMode]);
 
   useEffect(() => {
     if (!mapInstance || startGate !== "ready" || !position) return;
+    if (pocketMode) return;
+    if (!isLeafletMapUsable(mapInstance)) return;
     if (centeredOnStartRef.current) return;
     mapInstance.stop();
     mapInstance.flyTo(position, Math.max(mapInstance.getZoom(), 15), {
@@ -712,7 +751,7 @@ export default function Navigation() {
       easeLinearity: 0.2,
     });
     centeredOnStartRef.current = true;
-  }, [mapInstance, startGate, position]);
+  }, [mapInstance, startGate, position, pocketMode]);
 
   useEffect(() => {
     if (startGate !== "ready") return;
@@ -789,6 +828,7 @@ export default function Navigation() {
 
   async function centerOnUser() {
     if (!mapInstance) return;
+    if (!isLeafletMapUsable(mapInstance)) return;
     const target = position || (await requestQuickLocation({ timeoutMs: 3500 }));
     if (!target) return;
     mapInstance.stop();
@@ -801,6 +841,7 @@ export default function Navigation() {
 
   function onMapClickZoom(latlng) {
     if (!mapInstance || !latlng) return;
+    if (!isLeafletMapUsable(mapInstance)) return;
     // Zoom volutamente meno aggressivo: un livello in meno rispetto al comportamento precedente.
     const targetZoom = Math.min(17, Math.max(13, mapInstance.getZoom() + 1));
     mapInstance.stop();

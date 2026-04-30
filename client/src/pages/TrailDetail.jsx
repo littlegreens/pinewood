@@ -149,6 +149,14 @@ function FitTrailBounds({ line }) {
   return null;
 }
 
+function MapReadyBridge({ onReady }) {
+  const map = useMap();
+  useEffect(() => {
+    onReady?.(map);
+  }, [map, onReady]);
+  return null;
+}
+
 export default function TrailDetail() {
   const { trailId } = useParams();
   const navigate = useNavigate();
@@ -194,6 +202,8 @@ export default function TrailDetail() {
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [aiGenerating, setAiGenerating] = useState(false);
   const [me, setMe] = useState(() => readStoredUser());
+  const [mapExpanded, setMapExpanded] = useState(false);
+  const trailMapRef = useRef(null);
   const renderedDescriptionRef = useRef(null);
 
   function resolveBackTarget() {
@@ -339,6 +349,19 @@ export default function TrailDetail() {
     trail?.parse_status !== "processing_elevation" &&
     trail?.parse_status !== "ready_no_elevation" &&
     elevationProfile.length > 1;
+
+  useEffect(() => {
+    const map = trailMapRef.current;
+    if (!map) return;
+    const id = window.setTimeout(() => {
+      try {
+        map.invalidateSize({ animate: false });
+      } catch {
+        // map can be unmounted during route changes
+      }
+    }, 180);
+    return () => window.clearTimeout(id);
+  }, [mapExpanded, line.length]);
 
   function buildElevationPath(profile, width, height, pad) {
     const minD = profile[0].distance_m;
@@ -911,7 +934,15 @@ export default function TrailDetail() {
           </Box>
         </Box>
       </Container>
-      <Box sx={{ width: "100%", height: 260, overflow: "hidden" }}>
+      <Box
+        sx={{
+          width: "100%",
+          height: mapExpanded ? "min(67vh, calc(100vh - 120px))" : 260,
+          overflow: "hidden",
+          position: "relative",
+          transition: "height 260ms ease",
+        }}
+      >
             <MapContainer
               center={mapCenter}
               zoom={13}
@@ -920,6 +951,7 @@ export default function TrailDetail() {
               attributionControl={false}
               zoomControl={false}
             >
+              <MapReadyBridge onReady={(map) => (trailMapRef.current = map)} />
               <FitTrailBounds line={line} />
               <TileLayer
                 attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
@@ -955,6 +987,33 @@ export default function TrailDetail() {
                 ) : null
               )}
             </MapContainer>
+            <Button
+              size="small"
+              onClick={() => setMapExpanded((v) => !v)}
+              sx={{
+                position: "absolute",
+                right: 10,
+                bottom: 10,
+                zIndex: 1400,
+                minWidth: 0,
+                width: 32,
+                height: 32,
+                p: 0,
+                bgcolor: "rgba(255,255,255,0.86)",
+                color: "#111",
+                borderRadius: 0.8,
+                border: "1px solid rgba(0,0,0,0.16)",
+                boxShadow: "0 2px 8px rgba(0,0,0,0.22)",
+                "&:hover": { bgcolor: "rgba(255,255,255,0.95)" },
+              }}
+            >
+              <Box
+                component="img"
+                src={mapExpanded ? "/zoom_in_map.svg" : "/zoom_out_map.svg"}
+                alt=""
+                sx={{ width: 20, height: 20, opacity: 1, display: "block", filter: "brightness(0)" }}
+              />
+            </Button>
       </Box>
 
       <Box sx={{ width: "100%", bgcolor: "#0f2517", pt: "24px", pb: "24px", mt: 0, mb: "9.6px" }}>

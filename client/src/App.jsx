@@ -68,8 +68,11 @@ export default function App() {
   }, [pathname]);
 
   useEffect(() => {
-    function escapeNavigationHistoryEntry() {
+    function escapeNavigationHistoryEntry(event) {
       if (!window.location.pathname.startsWith("/app/navigation/")) return;
+      // In mobile/fullscreen (anche in pocket mode) pageshow puo' scattare su resume:
+      // non e' un vero "back" e non deve forzare uscita da Navigation.
+      if (event?.type === "pageshow") return;
       const fallback = sessionStorage.getItem("pinewood_last_safe_route") || "/app";
       navigate(fallback, { replace: true });
     }
