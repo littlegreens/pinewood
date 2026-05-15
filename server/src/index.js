@@ -11,6 +11,7 @@ import savedTrailsRouter from "./routes/savedTrails.js";
 import parkingsRouter from "./routes/parkings.js";
 import usersRouter from "./routes/users.js";
 import adminUsersRouter from "./routes/adminUsers.js";
+import contactRouter from "./routes/contact.js";
 import { startElevationWorker } from "./services/elevationWorker.js";
 import { purgeExpiredRefreshTokens } from "./services/authTokens.js";
 import { ensureUploadsRoot, getUploadsRoot } from "./services/fileStorage.js";
@@ -40,6 +41,7 @@ app.use("/api/saved-trails", savedTrailsRouter);
 app.use("/api/parkings", parkingsRouter);
 app.use("/api/users", usersRouter);
 app.use("/api/admin", adminUsersRouter);
+app.use("/api/contact", contactRouter);
 
 startElevationWorker();
 setInterval(() => {

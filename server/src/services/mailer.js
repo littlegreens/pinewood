@@ -19,16 +19,21 @@ function getTransporter() {
   return transporter;
 }
 
-export async function sendMail({ to, subject, text, html }) {
+export function isSmtpConfigured() {
+  return Boolean(env.smtpUser && env.smtpPass);
+}
+
+export async function sendMail({ to, subject, text, html, replyTo }) {
   const tx = getTransporter();
   if (!tx) {
-    console.warn("[mail] SMTP non configurato: email non inviata", { to, subject });
+    console.warn("[mail] SMTP non configurato (SMTP_USER/SMTP_PASS mancanti)", { to, subject });
     return false;
   }
   try {
     await tx.sendMail({
       from: env.smtpFrom || env.smtpUser,
       to,
+      replyTo: replyTo || undefined,
       subject,
       text,
       html,
@@ -39,6 +44,7 @@ export async function sendMail({ to, subject, text, html }) {
       to,
       subject,
       message: error?.message || "errore sconosciuto",
+      code: error?.code,
     });
     return false;
   }
