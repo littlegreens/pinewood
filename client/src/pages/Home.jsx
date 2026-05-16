@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  Alert,
   Box,
   Button,
   Checkbox,
@@ -24,7 +23,11 @@ import { useDrag } from "@use-gesture/react";
 
 import { useNavigate } from "react-router-dom";
 import { detectLanguage, t } from "../services/i18n.js";
+import { AUTH_MSG, authMessageColor, isEmailNotVerifiedResponse } from "../services/authMessages.js";
 import InternalHeader from "../components/InternalHeader.jsx";
+import AppBanner from "../components/AppBanner.jsx";
+import PageContainer from "../components/PageContainer.jsx";
+import { pageContainerSx } from "../theme/layout.js";
 import { apiFetch } from "../services/api.js";
 import { setStoredUserProfile } from "../services/api.js";
 
@@ -54,7 +57,13 @@ export default function Home() {
   const [acceptTerms, setAcceptTerms] = useState(false);
   const [marketingOptIn, setMarketingOptIn] = useState(false);
   const [authMessage, setAuthMessage] = useState("");
+  const [authMessageTone, setAuthMessageTone] = useState("");
   const [authBusy, setAuthBusy] = useState(false);
+
+  function showAuthMessage(text, tone = "info") {
+    setAuthMessage(text);
+    setAuthMessageTone(tone);
+  }
   const [pendingVerificationEmail, setPendingVerificationEmail] = useState("");
   const [verifyCode, setVerifyCode] = useState("");
   const [legalModal, setLegalModal] = useState("");
@@ -67,6 +76,12 @@ export default function Home() {
   const [contactMessage, setContactMessage] = useState("");
   const [contactStatus, setContactStatus] = useState("");
   const [contactBusy, setContactBusy] = useState(false);
+
+  useEffect(() => {
+    if (!contactStatus) return undefined;
+    const id = window.setTimeout(() => setContactStatus(""), 3000);
+    return () => window.clearTimeout(id);
+  }, [contactStatus]);
 
   const legalContent = useMemo(
     () => ({
@@ -103,6 +118,7 @@ export default function Home() {
     e.preventDefault();
     setAuthBusy(true);
     setAuthMessage("");
+    setAuthMessageTone("");
     try {
       const endpoint = isRegister ? "/api/auth/register" : "/api/auth/login";
       const payload = isRegister
@@ -116,12 +132,20 @@ export default function Home() {
       });
       const data = await readJsonSafe(response);
       if (!response.ok) {
+        if (!isRegister && isEmailNotVerifiedResponse(data, response.status)) {
+          setIsRegister(false);
+          setPendingVerificationEmail(String(authEmail).trim().toLowerCase());
+          setVerifyCode("");
+          showAuthMessage(AUTH_MSG.emailNotVerified, "info");
+          setAuthBusy(false);
+          return;
+        }
         throw new Error(data.error || t(lang, "loginFailed"));
       }
       if (isRegister) {
-        setPendingVerificationEmail(authEmail);
+        setPendingVerificationEmail(String(authEmail).trim().toLowerCase());
         setVerifyCode("");
-        setAuthMessage("Registrazione creata. Controlla la mail per il codice di verifica.");
+        showAuthMessage(AUTH_MSG.registerOk, "info");
         setAuthBusy(false);
         return;
       }
@@ -131,7 +155,7 @@ export default function Home() {
       window.dispatchEvent(new Event("pinewood-user-updated"));
       navigate("/app/trails");
     } catch (error) {
-      setAuthMessage(error.message || t(lang, "loginFailed"));
+      showAuthMessage(error.message || t(lang, "loginFailed"), "error");
     } finally {
       setAuthBusy(false);
     }
@@ -141,6 +165,7 @@ export default function Home() {
     if (!pendingVerificationEmail || !verifyCode) return;
     setAuthBusy(true);
     setAuthMessage("");
+    setAuthMessageTone("");
     try {
       const response = await fetch(`${API}/api/auth/verify-email`, {
         method: "POST",
@@ -149,13 +174,13 @@ export default function Home() {
         body: JSON.stringify({ email: pendingVerificationEmail, code: verifyCode }),
       });
       const data = await readJsonSafe(response);
-      if (!response.ok) throw new Error(data.error || "Verifica email fallita");
+      if (!response.ok) throw new Error(data.error || AUTH_MSG.verifyFailed);
       setPendingVerificationEmail("");
       setVerifyCode("");
       setIsRegister(false);
-      setAuthMessage("Email verificata. Ora puoi fare login.");
+      showAuthMessage(AUTH_MSG.verifyOk, "success");
     } catch (error) {
-      setAuthMessage(error.message || "Verifica email fallita");
+      showAuthMessage(error.message || AUTH_MSG.verifyFailed, "error");
     } finally {
       setAuthBusy(false);
     }
@@ -164,16 +189,20 @@ export default function Home() {
   async function resendVerification() {
     if (!pendingVerificationEmail) return;
     setAuthBusy(true);
+    setAuthMessage("");
+    setAuthMessageTone("");
     try {
-      await fetch(`${API}/api/auth/resend-verification`, {
+      const response = await fetch(`${API}/api/auth/resend-verification`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
         body: JSON.stringify({ email: pendingVerificationEmail }),
       });
-      setAuthMessage("Nuova email di verifica inviata.");
-    } catch {
-      setAuthMessage("Invio verifica fallito");
+      const data = await readJsonSafe(response);
+      if (!response.ok) throw new Error(data.error || AUTH_MSG.resendFailed);
+      showAuthMessage(AUTH_MSG.resendOk, "success");
+    } catch (error) {
+      showAuthMessage(error.message || AUTH_MSG.resendFailed, "error");
     } finally {
       setAuthBusy(false);
     }
@@ -182,6 +211,8 @@ export default function Home() {
   async function onForgotPassword() {
     if (!forgotEmail) return;
     setForgotBusy(true);
+    setAuthMessage("");
+    setAuthMessageTone("");
     try {
       const response = await fetch(`${API}/api/auth/forgot-password`, {
         method: "POST",
@@ -190,11 +221,11 @@ export default function Home() {
         body: JSON.stringify({ email: forgotEmail }),
       });
       const data = await readJsonSafe(response);
-      if (!response.ok) throw new Error(data.error || "Invio fallito");
+      if (!response.ok) throw new Error(data.error || AUTH_MSG.forgotFailed);
       setForgotOpen(false);
-      setAuthMessage("Mail inviata! Controlla la tua casella.");
+      showAuthMessage(AUTH_MSG.forgotOk, "success");
     } catch (error) {
-      setAuthMessage(error.message);
+      showAuthMessage(error.message || AUTH_MSG.forgotFailed, "error");
     } finally {
       setForgotBusy(false);
     }
@@ -332,8 +363,8 @@ export default function Home() {
           {/* 1. HERO */}
           <Box sx={{ ...sectionSx, backgroundImage: "url('/bg_home_05.webp')", backgroundSize: "cover", backgroundPosition: "center", backgroundColor: "#1b2a1f" }}>
             <Box sx={{ position: "absolute", inset: 0, background: "linear-gradient(180deg, rgba(10,18,12,0.35) 0%, rgba(10,18,12,0.55) 100%)" }} />
-            <Box sx={{ position: "relative", zIndex: 1, px: 3, maxWidth: 540, textAlign: "center" }}>
-              <Typography sx={{ color: "#fff", fontSize: { xs: "2.2rem !important", sm: "2.8rem !important" }, lineHeight: 1.2, textShadow: "0 6px 32px rgba(0,0,0,0.6)", mb: 3 }}>
+            <Box sx={{ position: "relative", zIndex: 1, px: 3, ...pageContainerSx, textAlign: "center" }}>
+              <Typography sx={{ color: "#fff", fontSize: { xs: "2.2rem !important", md: "3.2rem !important" }, lineHeight: 1.2, textShadow: "0 6px 32px rgba(0,0,0,0.6)", mb: 3 }}>
           Keep the way
         </Typography>
               <Typography sx={{ color: "#fff", fontSize: "1.2rem !important", lineHeight: 1.7, textShadow: "0 4px 24px rgba(0,0,0,0.5)" }}>
@@ -347,8 +378,8 @@ export default function Home() {
           {/* 2. CHI SIAMO */}
           <Box sx={{ ...sectionSx, backgroundImage: "url('/bg_home_08.webp')", backgroundSize: "cover", backgroundPosition: "center", backgroundColor: "#1b2a1f" }}>
             <Box sx={{ position: "absolute", inset: 0, background: "linear-gradient(180deg, rgba(10,18,12,0.4) 0%, rgba(10,18,12,0.6) 100%)" }} />
-            <Container maxWidth="sm" sx={{ position: "relative", zIndex: 1 }}>
-              <Stack spacing={2.5} sx={{ textAlign: "center", py: 4 }}>
+            <PageContainer sx={{ position: "relative", zIndex: 1 }}>
+              <Stack spacing={2.5} sx={{ textAlign: "center", py: { xs: 4, md: 5 } }}>
                 <Typography sx={{ color: "rgba(255,255,255,0.92)", fontSize: "1.2rem !important", lineHeight: 1.85 }}>
                   Solo sentieri, navigazione GPS e la community di chi condivide i propri percorsi. Niente social, niente vanity metrics.
                 </Typography>
@@ -359,14 +390,14 @@ export default function Home() {
                   Ogni trail caricato diventa parte di una mappa costruita da chi cammina, per chi cammina. Keep the way.
           </Typography>
               </Stack>
-            </Container>
+            </PageContainer>
           </Box>
 
           {/* 3. CTA TRAILS / MAPPA */}
           <Box sx={{ ...sectionSx, backgroundImage: "url('/bg_home_07.webp')", backgroundSize: "cover", backgroundPosition: "center", backgroundColor: "#1b2a1f" }}>
             <Box sx={{ position: "absolute", inset: 0, background: "linear-gradient(180deg, rgba(10,18,12,0.3) 0%, rgba(10,18,12,0.6) 100%)" }} />
-            <Box sx={{ position: "relative", zIndex: 1, textAlign: "center", px: 3, maxWidth: 500 }}>
-              <Typography sx={{ color: "#fff", fontWeight: 800, fontSize: { xs: "1.8rem !important", sm: "2.2rem !important" }, textShadow: "0 4px 20px rgba(0,0,0,0.5)", mb: 2 }}>
+            <Box sx={{ position: "relative", zIndex: 1, textAlign: "center", px: 3, ...pageContainerSx }}>
+              <Typography sx={{ color: "#fff", fontWeight: 800, fontSize: { xs: "1.8rem !important", md: "2.5rem !important" }, textShadow: "0 4px 20px rgba(0,0,0,0.5)", mb: 2 }}>
                 Esplora i sentieri
               </Typography>
               <Typography sx={{ color: "rgba(255,255,255,0.88)", fontSize: "1.2rem !important", lineHeight: 1.7, mb: 1.5, textShadow: "0 2px 12px rgba(0,0,0,0.4)" }}>
@@ -390,9 +421,9 @@ export default function Home() {
           {isGuest && (
             <Box sx={{ ...sectionSx, backgroundImage: "url('/bg_home_04.webp')", backgroundSize: "cover", backgroundPosition: "center", backgroundColor: "#1b2a1f" }}>
               <Box sx={{ position: "absolute", inset: 0, background: "linear-gradient(180deg, rgba(10,18,12,0.4) 0%, rgba(10,18,12,0.6) 100%)" }} />
-              <Container maxWidth="sm" sx={{ position: "relative", zIndex: 1 }}>
-                <Stack spacing={2.5} sx={{ textAlign: "center", py: 4 }}>
-                  <Typography sx={{ fontWeight: 800, color: "#fff", fontSize: { xs: "1.8rem !important", sm: "2.2rem !important" }, textShadow: "0 4px 20px rgba(0,0,0,0.5)" }}>
+              <PageContainer sx={{ position: "relative", zIndex: 1 }}>
+                <Stack spacing={2.5} sx={{ textAlign: "center", py: { xs: 4, md: 5 } }}>
+                  <Typography sx={{ fontWeight: 800, color: "#fff", fontSize: { xs: "1.8rem !important", md: "2.5rem !important" }, textShadow: "0 4px 20px rgba(0,0,0,0.5)" }}>
                     Entra in Pinewood
                   </Typography>
                   <Typography sx={{ lineHeight: 1.7, color: "rgba(255,255,255,0.88)", fontSize: "1.2rem !important" }}>
@@ -413,16 +444,16 @@ export default function Home() {
                     </Button>
                   </Stack>
                 </Stack>
-              </Container>
+              </PageContainer>
             </Box>
           )}
 
           {/* 5. CONTATTACI */}
           <Box sx={{ ...sectionSx, backgroundImage: "url('/bg_home_06.webp')", backgroundSize: "cover", backgroundPosition: "center", backgroundColor: "#1b2a1f" }}>
             <Box sx={{ position: "absolute", inset: 0, background: "linear-gradient(180deg, rgba(10,18,12,0.4) 0%, rgba(10,18,12,0.65) 100%)" }} />
-            <Container maxWidth="sm" sx={{ py: 4, position: "relative", zIndex: 1 }}>
+            <PageContainer sx={{ py: { xs: 4, md: 5 }, position: "relative", zIndex: 1 }}>
               <Stack spacing={2}>
-                <Typography sx={{ fontWeight: 800, color: "#fff", textAlign: "center", fontSize: { xs: "1.8rem !important", sm: "2.2rem !important" }, textShadow: "0 4px 20px rgba(0,0,0,0.5)" }}>
+                <Typography sx={{ fontWeight: 800, color: "#fff", textAlign: "center", fontSize: { xs: "1.8rem !important", md: "2.5rem !important" }, textShadow: "0 4px 20px rgba(0,0,0,0.5)" }}>
                   Contattaci
                 </Typography>
                 <Typography sx={{ textAlign: "center", color: "rgba(255,255,255,0.85)", fontSize: "1.2rem !important" }}>
@@ -436,12 +467,10 @@ export default function Home() {
                     <Button type="submit" variant="contained" disabled={contactBusy} sx={{ alignSelf: "flex-end", px: 3, borderRadius: 99, fontWeight: 700, bgcolor: "#fff", color: "#2D4F1E", "&:hover": { bgcolor: "#f0f0f0" } }}>
                       {contactBusy ? "Invio..." : "Invia"}
                     </Button>
-                    {contactStatus === "success" && <Alert severity="success">Messaggio inviato! Ti risponderemo presto.</Alert>}
-                    {contactStatus === "error" && <Alert severity="error">Invio fallito, riprova più tardi.</Alert>}
                   </Stack>
                 </Box>
               </Stack>
-            </Container>
+            </PageContainer>
           </Box>
         </Box>
       </Box>
@@ -492,25 +521,35 @@ export default function Home() {
                     e i{" "}
                     <Link component="button" type="button" underline="hover" onClick={() => setLegalModal("terms")}>Termini di Servizio</Link>.
                   </Typography>
-                  {pendingVerificationEmail && (
-                    <>
-                      <Typography variant="caption" color="text.secondary">
-                        Abbiamo inviato un codice a {pendingVerificationEmail}.
-                      </Typography>
-                      <TextField label="Codice verifica" value={verifyCode} onChange={(e) => setVerifyCode(e.target.value)} fullWidth />
-                      <Stack direction="row" spacing={1}>
-                        <Button variant="outlined" onClick={verifyEmailByCode} disabled={authBusy || !verifyCode}>Verifica</Button>
-                        <Button variant="text" onClick={resendVerification} disabled={authBusy}>Reinvia</Button>
-              </Stack>
-                    </>
-                  )}
+                </>
+              )}
+              {pendingVerificationEmail && (
+                <>
+                  <Typography variant="caption" color="text.secondary">
+                    Codice inviato a <strong>{pendingVerificationEmail}</strong>. Inserisci le 6 cifre ricevute per email.
+                  </Typography>
+                  <TextField
+                    label="Codice a 6 cifre"
+                    value={verifyCode}
+                    onChange={(e) => setVerifyCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
+                    inputProps={{ inputMode: "numeric", pattern: "[0-9]*", maxLength: 6 }}
+                    fullWidth
+                  />
+                  <Stack direction="row" spacing={1}>
+                    <Button variant="outlined" onClick={verifyEmailByCode} disabled={authBusy || verifyCode.length < 6}>
+                      Verifica codice
+                    </Button>
+                    <Button variant="text" onClick={resendVerification} disabled={authBusy}>
+                      Reinvia email
+                    </Button>
+                  </Stack>
                 </>
               )}
               <Button type="submit" variant="contained" size="large" disabled={authBusy}>
                 {authBusy ? t(lang, "wait") : isRegister ? t(lang, "createAccount") : t(lang, "signIn")}
               </Button>
               {authMessage && (
-                <Typography color={/(fallit|errore|non valido)/i.test(authMessage) ? "error" : "success.main"} variant="body2">
+                <Typography color={authMessageColor(authMessageTone)} variant="body2">
                   {authMessage}
                 </Typography>
               )}
@@ -553,6 +592,19 @@ export default function Home() {
             </Button>
         </DialogActions>
       </Dialog>
+
+      <AppBanner
+        message={
+          contactStatus === "success"
+            ? "Messaggio inviato! Ti risponderemo presto."
+            : contactStatus === "error"
+              ? "Invio fallito, riprova più tardi."
+              : ""
+        }
+        type={contactStatus === "error" ? "error" : "success"}
+        onDismiss={() => setContactStatus("")}
+        durationMs={3000}
+      />
     </Box>
   );
 }

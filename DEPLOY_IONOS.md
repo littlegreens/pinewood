@@ -1,5 +1,8 @@
 # Deploy Pinewood su IONOS + Supabase (senza Docker)
 
+> **Produzione Hestia attuale** (path `public_html` + `server` sotto `/home/gabverdini/web/...`):
+> vedi **[DEPLOY_HESTIA.md](DEPLOY_HESTIA.md)** e **`deploy/hestia.env`**.
+
 Questa guida usa:
 - frontend statico Vite (`client/dist`)
 - backend Node/Express con PM2 (`server`)
@@ -43,7 +46,7 @@ Crea `server/.env`:
 cat > /var/www/pinewood/server/.env <<'EOF'
 NODE_ENV=production
 PORT=3001
-CLIENT_URL=https://pinewood.foundly.it
+CLIENT_URL=https://pinewood.to
 DATABASE_URL=postgresql://postgres.zgfmxndqmjpvlveqksht:P1n3w00d2026%24%21@aws-1-eu-west-3.pooler.supabase.com:6543/postgres
 REDIS_URL=redis://127.0.0.1:6379
 JWT_SECRET=CAMBIA_CON_UN_RANDOM_LUNGO
@@ -117,6 +120,8 @@ sudo ln -sfn /etc/nginx/sites-available/pinewood.foundly.it.conf /etc/nginx/site
 sudo nginx -t
 sudo systemctl reload nginx
 ```
+
+Su **Hestia**, se alcune API restano appese a lungo, valuta `proxy_read_timeout` piu alto in `location /api/` (vedi `deploy/nginx/hestia-nginx.ssl.conf_api_timeouts.snippet`).
 
 ## 8) Redis (se non gia presente)
 

@@ -1,0 +1,71 @@
+{
+  "expo": {
+    "name": "Pinewood",
+    "slug": "pinewood",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "newArchEnabled": true,
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#2D4F1E"
+    },
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "to.pinewood.app",
+      "infoPlist": {
+        "UIFileSharingEnabled": true,
+        "LSSupportsOpeningDocumentsInPlace": true,
+        "NSLocationWhenInUseUsageDescription": "Pinewood usa la tua posizione per mostrarti i sentieri vicini e per la navigazione GPS.",
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "Pinewood usa la posizione in background per la navigazione GPS sul sentiero.",
+        "UIBackgroundModes": ["location", "audio"]
+      },
+      "config": {
+        "usesNonExemptEncryption": false
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#2D4F1E"
+      },
+      "package": "to.pinewood.app",
+      "permissions": [
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_COARSE_LOCATION",
+        "ACCESS_BACKGROUND_LOCATION",
+        "FOREGROUND_SERVICE",
+        "FOREGROUND_SERVICE_LOCATION",
+        "VIBRATE",
+        "WAKE_LOCK"
+      ],
+      "config": {}
+    },
+    "plugins": [
+      "expo-secure-store",
+      [
+        "expo-font",
+        {
+          "fonts": [
+            "node_modules/@expo-google-fonts/titillium-web/400Regular/TitilliumWeb_400Regular.ttf",
+            "node_modules/@expo-google-fonts/titillium-web/600SemiBold/TitilliumWeb_600SemiBold.ttf",
+            "node_modules/@expo-google-fonts/titillium-web/700Bold/TitilliumWeb_700Bold.ttf",
+            "node_modules/@expo-google-fonts/shadows-into-light-two/400Regular/ShadowsIntoLightTwo_400Regular.ttf"
+          ]
+        }
+      ],
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "Pinewood usa la posizione in background per la navigazione GPS.",
+          "locationAlwaysPermission": "Pinewood usa la posizione in background per la navigazione GPS.",
+          "locationWhenInUsePermission": "Pinewood usa la tua posizione per mostrarti i sentieri vicini.",
+          "isAndroidBackgroundLocationEnabled": true,
+          "isAndroidForegroundServiceEnabled": true
+        }
+      ]
+    ]
+  }
+}

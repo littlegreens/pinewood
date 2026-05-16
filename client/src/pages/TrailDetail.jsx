@@ -1,15 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  Alert,
   Avatar,
   Box,
   Button,
   Chip,
-  Container,
   Dialog,
   DialogActions,
   DialogContent,
   IconButton,
+  Link,
   List,
   ListItem,
   ListItemText,
@@ -39,11 +38,24 @@ import InternalHeader from "../components/InternalHeader.jsx";
 import BookmarkPinewoodIcon from "../components/BookmarkPinewoodIcon.jsx";
 import TrailEngagementStats from "../components/TrailEngagementStats.jsx";
 import AppDialogTitle from "../components/AppDialogTitle.jsx";
+import AppBanner from "../components/AppBanner.jsx";
+import PageContainer from "../components/PageContainer.jsx";
+import { hideOnDesktopSx, showOnDesktopSx } from "../theme/layout.js";
 import { detectLanguage, t } from "../services/i18n.js";
 import { apiFetch } from "../services/api.js";
 import { getLastKnownLocation, requestQuickLocation } from "../services/locationTracker.js";
+import { buildElevationProfilePath } from "../utils/elevationProfilePath.js";
 import ReactQuill from "react-quill";
 import "react-quill/dist/quill.snow.css";
+
+/** URL assoluto per il browser; accetta input senza schema (es. www.example.com/path). */
+function officialWebsiteHref(raw) {
+  const s = String(raw ?? "").trim();
+  if (!s) return "";
+  if (/^https?:\/\//i.test(s)) return s;
+  if (s.startsWith("//")) return `https:${s}`;
+  return `https://${s}`;
+}
 
 const API = import.meta.env.VITE_API_URL || "";
 const OSM_TILE_TEMPLATE = "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png";
@@ -190,20 +202,16 @@ export default function TrailDetail() {
   const [playAlert, setPlayAlert] = useState({ type: "", text: "" });
   const [playStarting, setPlayStarting] = useState(false);
   const [offlineBusy, setOfflineBusy] = useState(false);
-  const [offlineDialog, setOfflineDialog] = useState({
-    open: false,
-    text: "",
-    success: false,
-  });
+  const [offlineBanner, setOfflineBanner] = useState({ type: "", text: "" });
   const [isGuest, setIsGuest] = useState(() => !localStorage.getItem("pinewood_access_token"));
   const [forecastDays, setForecastDays] = useState([]);
   const [shareOpen, setShareOpen] = useState(false);
   const [shareNotice, setShareNotice] = useState("");
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
-  const [aiGenerating, setAiGenerating] = useState(false);
   const [me, setMe] = useState(() => readStoredUser());
   const [mapExpanded, setMapExpanded] = useState(false);
   const trailMapRef = useRef(null);
+  const mapSectionRef = useRef(null);
   const renderedDescriptionRef = useRef(null);
 
   function resolveBackTarget() {
@@ -363,22 +371,28 @@ export default function TrailDetail() {
     return () => window.clearTimeout(id);
   }, [mapExpanded, line.length]);
 
-  function buildElevationPath(profile, width, height, pad) {
-    const minD = profile[0].distance_m;
-    const maxD = profile[profile.length - 1].distance_m || minD + 1;
-    const elevs = profile.map((p) => p.elevation_m);
-    const minE = Math.min(...elevs);
-    const maxE = Math.max(...elevs);
-    const spanD = Math.max(1, maxD - minD);
-    const spanE = Math.max(1, maxE - minE);
-    const points = profile.map((p) => {
-      const x = pad + ((p.distance_m - minD) / spanD) * (width - pad * 2);
-      const y = height - pad - ((p.elevation_m - minE) / spanE) * (height - pad * 2);
-      return { x, y };
+  useEffect(() => {
+    if (!mapExpanded) return;
+    let cancelled = false;
+    const run = () => {
+      if (cancelled) return;
+      const el = mapSectionRef.current;
+      if (!el) return;
+      const header = document.querySelector("header.MuiAppBar-root");
+      const headerH = header?.getBoundingClientRect().height ?? 56;
+      const rect = el.getBoundingClientRect();
+      const targetY = rect.top + window.scrollY - headerH;
+      if (Math.abs(targetY - window.scrollY) < 3) return;
+      window.scrollTo({ top: Math.max(0, targetY), behavior: "smooth" });
+    };
+    const id = requestAnimationFrame(() => {
+      requestAnimationFrame(run);
     });
-    const d = points.map((p, i) => `${i === 0 ? "M" : "L"}${p.x.toFixed(1)} ${p.y.toFixed(1)}`).join(" ");
-    return { d, minE: Math.round(minE), maxE: Math.round(maxE) };
-  }
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(id);
+    };
+  }, [mapExpanded]);
 
   function openEdit() {
     setEditData({
@@ -577,10 +591,9 @@ export default function TrailDetail() {
         window.matchMedia?.("(display-mode: standalone)")?.matches || window.navigator.standalone === true;
       const out = await warmupTilesForLine(line, { installedPwa: Boolean(isStandalone) });
       if (!out.ok) {
-        setOfflineDialog({
-          open: true,
-          success: false,
-          text: "Non sono riuscito a preparare la mappa offline adesso. Riprova con una rete migliore.",
+        setOfflineBanner({
+          type: "error",
+          text: t(lang, "mapWarmupFailed"),
         });
         return;
       }
@@ -589,12 +602,9 @@ export default function TrailDetail() {
         localStorage.setItem(offlineTrailStorageKey(trailId), JSON.stringify(payload));
         localStorage.removeItem(legacyOfflineTrailStorageKey(trailId));
       }
-      setOfflineDialog({
-        open: true,
-        success: true,
-        text: out.partial
-          ? "Mappa offline pronta in parte. Le zone principali del percorso sono disponibili."
-          : "Traccia scaricata offline. Sei pronto per partire!",
+      setOfflineBanner({
+        type: out.partial ? "warning" : "success",
+        text: out.partial ? t(lang, "mapWarmupPartial") : t(lang, "offlineReadyMsg"),
       });
     } finally {
       setOfflineBusy(false);
@@ -646,35 +656,6 @@ export default function TrailDetail() {
       setTrail(data);
     }
     setEditOpen(false);
-  }
-
-  async function generateDescriptionAi() {
-    if (!trail?.id || me?.role !== "super_admin" || !trail?.is_mine) return;
-    setAiGenerating(true);
-    try {
-      const res = await apiFetch(`/api/trails/${trail.id}/generate-description-ai`, {
-        method: "POST",
-      });
-      const payload = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        setPlayAlert({ type: "error", text: payload?.error || t(lang, "genericError") });
-        return;
-      }
-      const reload = await apiFetch(`/api/trails/${trail.id}`);
-      if (reload.ok) {
-        const data = await reload.json();
-        setTrail(data);
-        setEditData((prev) => ({ ...prev, description: data.description || "" }));
-      }
-      if (!payload?.ok) {
-        setPlayAlert({
-          type: "warning",
-          text: `AI: ${payload?.reason || "generazione non applicata"}`,
-        });
-      }
-    } finally {
-      setAiGenerating(false);
-    }
   }
 
   async function deleteCurrentTrail() {
@@ -851,9 +832,9 @@ export default function TrailDetail() {
     return (
       <Box sx={{ minHeight: "100vh", bgcolor: "background.default" }}>
         <InternalHeader />
-        <Container maxWidth="sm" sx={{ py: 3 }}>
+        <PageContainer sx={{ py: 3 }}>
           <Typography color="text.secondary">{t(lang, "processing")}</Typography>
-        </Container>
+        </PageContainer>
       </Box>
     );
   }
@@ -863,19 +844,26 @@ export default function TrailDetail() {
   return (
     <Box sx={{ minHeight: "100vh", bgcolor: "background.default" }}>
       <InternalHeader />
-      {playAlert.text && (
-        <Box sx={{ px: 1.5, pt: 1 }}>
-          <Alert
-            severity={playAlert.type === "warning" ? "warning" : "error"}
-            onClose={() => setPlayAlert({ type: "", text: "" })}
-          >
-            {playAlert.text}
-          </Alert>
-        </Box>
-      )}
-      <Container maxWidth="sm" sx={{ py: 1.2 }}>
+      <AppBanner
+        message={playAlert.text}
+        type={
+          playAlert.type === "warning"
+            ? "warning"
+            : playAlert.type === "success"
+              ? "success"
+              : "error"
+        }
+        onDismiss={() => setPlayAlert({ type: "", text: "" })}
+      />
+      <AppBanner
+        message={offlineBanner.text}
+        type={offlineBanner.type === "success" ? "success" : offlineBanner.type === "warning" ? "warning" : "error"}
+        onDismiss={() => setOfflineBanner({ type: "", text: "" })}
+        top="max(132px, calc(env(safe-area-inset-top) + 116px))"
+      />
+      <PageContainer sx={{ py: { xs: 1.2, md: 2 } }}>
         <Box sx={{ minWidth: 0 }}>
-          <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "center", mt: 0 }}>
+          <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "center", mt: 0, flexWrap: "wrap", gap: 1 }}>
             <IconButton
               size="small"
               onClick={handleBack}
@@ -903,10 +891,29 @@ export default function TrailDetail() {
                   <BookmarkPinewoodIcon filled={Boolean(trail.is_saved)} sx={{ fontSize: 22 }} />
                 </IconButton>
               )}
+              {!isGuest && (
+                <Button
+                  variant="contained"
+                  startIcon={<PlayArrowRoundedIcon />}
+                  onClick={startNavigation}
+                  disabled={playStarting}
+                  sx={{
+                    ...showOnDesktopSx,
+                    borderRadius: 99,
+                    px: 2.5,
+                    py: 0.85,
+                    ml: 0.5,
+                    fontWeight: 700,
+                    boxShadow: "none",
+                  }}
+                >
+                  {t(lang, "startHike")}
+                </Button>
+              )}
             </Box>
           </Box>
           <Box sx={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 1, mt: 0.15 }}>
-            <Typography variant="h6" sx={{ fontWeight: 700, color: "#111111", minWidth: 0 }}>
+            <Typography variant="h5" sx={{ fontWeight: 700, color: "#111111", minWidth: 0 }}>
               {trail.name}
             </Typography>
             <Stack direction="row" spacing={0.6}>
@@ -933,11 +940,14 @@ export default function TrailDetail() {
             </Typography>
           </Box>
         </Box>
-      </Container>
+      </PageContainer>
       <Box
+        ref={mapSectionRef}
         sx={{
           width: "100%",
-          height: mapExpanded ? "min(67vh, calc(100vh - 120px))" : 260,
+          height: mapExpanded
+            ? { xs: "min(67vh, calc(100vh - 120px))", md: "min(55vh, 520px)" }
+            : { xs: 260, md: 380 },
           overflow: "hidden",
           position: "relative",
           transition: "height 260ms ease",
@@ -989,7 +999,9 @@ export default function TrailDetail() {
             </MapContainer>
             <Button
               size="small"
+              disableElevation
               onClick={() => setMapExpanded((v) => !v)}
+              aria-expanded={mapExpanded}
               sx={{
                 position: "absolute",
                 right: 10,
@@ -1003,8 +1015,8 @@ export default function TrailDetail() {
                 color: "#111",
                 borderRadius: 0.8,
                 border: "1px solid rgba(0,0,0,0.16)",
-                boxShadow: "0 2px 8px rgba(0,0,0,0.22)",
-                "&:hover": { bgcolor: "rgba(255,255,255,0.95)" },
+                boxShadow: "none",
+                "&:hover": { bgcolor: "rgba(255,255,255,0.95)", boxShadow: "none" },
               }}
             >
               <Box
@@ -1082,7 +1094,7 @@ export default function TrailDetail() {
           </Stack>
       </Box>
 
-      <Container maxWidth="sm" sx={{ pb: 6 }}>
+      <PageContainer sx={{ pb: { xs: 6, md: 8 } }}>
         <Stack spacing={2}>
           <Box sx={{ px: 1.5, py: 0.8 }}>
             <Stack spacing={1.1}>
@@ -1096,19 +1108,17 @@ export default function TrailDetail() {
                 </Typography>
               )}
               {trail.source_website_url && (
-                <Typography sx={{ color: "#2f2f2f" }}>
-                  <strong>{t(lang, "officialSource")}:</strong>{" "}
-                  <a
-                    href={
-                      String(trail.source_website_url).startsWith("http")
-                        ? trail.source_website_url
-                        : `https://${trail.source_website_url}`
-                    }
+                <Typography sx={{ color: "#2f2f2f" }} component="div">
+                  <strong>{t(lang, "officialSource")}</strong>{" "}
+                  <Link
+                    href={officialWebsiteHref(trail.source_website_url)}
                     target="_blank"
-                    rel="noreferrer"
+                    rel="noopener noreferrer"
+                    underline="hover"
+                    sx={{ wordBreak: "break-all" }}
                   >
-                    {t(lang, "officialSourceLink")}
-                  </a>
+                    {String(trail.source_website_url).trim()}
+                  </Link>
                 </Typography>
               )}
               {(trail.start_location_lat != null && trail.start_location_lon != null) && (
@@ -1183,7 +1193,7 @@ export default function TrailDetail() {
                       const width = 500;
                       const height = 140;
                       const pad = 10;
-                      const path = buildElevationPath(elevationProfile, width, height, pad);
+                      const path = buildElevationProfilePath(elevationProfile, width, height, pad);
                       return (
                         <svg viewBox={`0 0 ${width} ${height}`} width="100%" height="140" role="img">
                           <path d={path.d} fill="none" stroke="#2D4F1E" strokeWidth="2.2" strokeLinecap="round" />
@@ -1202,7 +1212,7 @@ export default function TrailDetail() {
                 )}
               </Box>
 
-              <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "center", pt: 0.8 }}>
+              <Box sx={{ ...hideOnDesktopSx, justifyContent: "space-between", alignItems: "center", pt: 0.8 }}>
                 <Stack direction="row" spacing={0.8}>
                   <IconButton
                     component={isGuest ? "button" : "a"}
@@ -1277,7 +1287,7 @@ export default function TrailDetail() {
             </Stack>
           </Box>
         </Stack>
-      </Container>
+      </PageContainer>
 
       <Dialog
         open={editOpen}
@@ -1330,13 +1340,6 @@ export default function TrailDetail() {
                   modules={QUILL_MODULES}
                   formats={QUILL_FORMATS}
                 />
-                {trail.is_mine && me?.role === "super_admin" && (
-                  <Box sx={{ mt: 1 }}>
-                    <Button size="small" variant="outlined" onClick={generateDescriptionAi} disabled={aiGenerating}>
-                      {aiGenerating ? t(lang, "wait") : t(lang, "generateAiDescription")}
-                    </Button>
-                  </Box>
-                )}
               </Box>
               <TextField
                 label={t(lang, "officialWebsite")}
@@ -1493,29 +1496,6 @@ export default function TrailDetail() {
           </Button>
         </DialogActions>
       </Dialog>
-      <Dialog
-        open={offlineDialog.open}
-        onClose={() => (offlineBusy ? undefined : setOfflineDialog({ open: false, text: "", success: false }))}
-        fullWidth
-        maxWidth="xs"
-      >
-        <AppDialogTitle
-          title="Percorso offline"
-          icon={offlineDialog.success ? <CheckCircleRoundedIcon sx={{ color: "#2e7d32" }} /> : null}
-        />
-        <DialogContent>
-          <Typography color="text.secondary">{offlineDialog.text}</Typography>
-        </DialogContent>
-        <DialogActions>
-          <Button
-            onClick={() => setOfflineDialog({ open: false, text: "", success: false })}
-            disabled={offlineBusy}
-            variant="contained"
-          >
-            Chiudi
-          </Button>
-        </DialogActions>
-      </Dialog>
       <Dialog open={shareOpen} onClose={() => setShareOpen(false)} fullWidth maxWidth="xs">
         <AppDialogTitle title="Condividi percorso" />
         <DialogContent sx={{ display: "grid", gap: 1.1 }}>
@@ -1535,9 +1515,20 @@ export default function TrailDetail() {
             Guarda questo percorso che ho trovato su Pinewood.
           </Typography>
           {shareNotice && (
-            <Alert severity="info" sx={{ py: 0 }}>
+            <Box
+              sx={{
+                borderLeft: "4px solid #ed6c02",
+                bgcolor: "#fff4e5",
+                color: "#663c00",
+                px: 1.75,
+                py: 1.25,
+                borderRadius: "8px",
+                fontSize: "0.92rem",
+                fontWeight: 600,
+              }}
+            >
               {shareNotice}
-            </Alert>
+            </Box>
           )}
         </DialogContent>
         <DialogActions>

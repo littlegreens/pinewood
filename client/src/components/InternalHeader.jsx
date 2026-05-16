@@ -8,14 +8,25 @@ import {
   IconButton,
   List,
   ListItemButton,
+  ListItemIcon,
   ListItemText,
   Toolbar,
 } from "@mui/material";
+import FilterHdrIcon from "@mui/icons-material/FilterHdr";
+import HikingIcon from "@mui/icons-material/Hiking";
+import ExploreIcon from "@mui/icons-material/Explore";
+import FavoriteBorderIcon from "@mui/icons-material/FavoriteBorder";
+import AccountCircleIcon from "@mui/icons-material/AccountCircle";
+import AdminPanelSettingsIcon from "@mui/icons-material/AdminPanelSettings";
+import LoginIcon from "@mui/icons-material/Login";
+import LogoutIcon from "@mui/icons-material/Logout";
 import { useLocation, useNavigate } from "react-router-dom";
 import { detectLanguage, t } from "../services/i18n.js";
 import { apiFetch } from "../services/api.js";
+import { pageContainerSx } from "../theme/layout.js";
 
 const API = import.meta.env.VITE_API_URL || "";
+const PINE = "#2D4F1E";
 
 function readStoredUser() {
   const raw = localStorage.getItem("pinewood_user");
@@ -26,6 +37,48 @@ function readStoredUser() {
     localStorage.removeItem("pinewood_user");
     return null;
   }
+}
+
+function NavItem({ icon, label, path, currentPath, onClick }) {
+  const active = path === "/app"
+    ? currentPath === "/app"
+    : currentPath.startsWith(path);
+
+  return (
+    <ListItemButton
+      onClick={onClick}
+      sx={{
+        borderRadius: 2,
+        mb: 0.3,
+        color: active ? PINE : "text.primary",
+        bgcolor: active ? "rgba(45,79,30,0.07)" : "transparent",
+        "&:hover": { bgcolor: active ? "rgba(45,79,30,0.12)" : "rgba(0,0,0,0.04)" },
+      }}
+    >
+      <ListItemIcon sx={{ minWidth: 36, color: active ? PINE : "text.primary" }}>
+        {icon}
+      </ListItemIcon>
+      <ListItemText
+        primary={label}
+        primaryTypographyProps={{
+          fontWeight: 700,
+          fontSize: "0.95rem",
+        }}
+      />
+      {active && (
+        <Box
+          sx={{
+            width: 4,
+            height: 22,
+            borderRadius: 99,
+            bgcolor: PINE,
+            ml: 1,
+            flexShrink: 0,
+          }}
+        />
+      )}
+    </ListItemButton>
+  );
 }
 
 export default function InternalHeader() {
@@ -100,49 +153,80 @@ export default function InternalHeader() {
     }
   }
 
+  function go(path) {
+    setIsDrawerOpen(false);
+    navigate(path);
+  }
+
+  const cur = location.pathname;
+
   return (
     <>
       <AppBar position="sticky" color="inherit" elevation={0} sx={{ bgcolor: "#fff" }}>
-        <Toolbar sx={{ justifyContent: "space-between", alignItems: "center", py: "0.4rem", px: 0, bgcolor: "#fff" }}>
-          <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-            <IconButton
-              aria-label="Apri menu laterale"
-              onClick={() => setIsDrawerOpen(true)}
-              sx={{ p: 0.5 }}
-            >
-              <img src="/thumbnail_ba.svg" alt="Menu" style={{ width: 24, height: 24 }} />
-            </IconButton>
-            <IconButton
-              aria-label="Vai alla home"
-              onClick={() => navigate("/app")}
-              sx={{ p: 0 }}
-            >
-              <img src="/logo.svg" alt="Pinewood" style={{ width: 160, height: "auto" }} />
-            </IconButton>
-          </Box>
-          {!isGuest && (
-            <Box sx={{ display: "flex", alignItems: "center", px: "4px" }}>
-              <IconButton aria-label="Vai alla dashboard" onClick={() => navigate("/app/profile")} sx={{ p: 0 }}>
-                <Avatar
-                  src={avatarSrc}
-                  sx={{
-                    width: 32,
-                    height: 32,
-                    p: 0,
-                    bgcolor: avatarSrc ? "#fff" : "primary.main",
-                    color: "white",
-                    fontSize: "0.8rem",
-                    fontWeight: 700,
-                    "& .MuiAvatar-img": {
-                      objectFit: "cover",
-                    },
-                  }}
-                >
-                  {initials}
-                </Avatar>
+        <Toolbar
+          disableGutters
+          sx={{
+            justifyContent: "center",
+            alignItems: "center",
+            py: { xs: "0.4rem", md: "0.65rem" },
+            px: 0,
+            bgcolor: "#fff",
+            minHeight: { xs: 56, md: 72 },
+          }}
+        >
+          <Box
+            sx={{
+              ...pageContainerSx,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              width: "100%",
+            }}
+          >
+            <Box sx={{ display: "flex", alignItems: "center", gap: { xs: 1, md: 1.5 } }}>
+              <IconButton
+                aria-label="Apri menu laterale"
+                onClick={() => setIsDrawerOpen(true)}
+                sx={{ p: 0.5 }}
+              >
+                <Box
+                  component="img"
+                  src="/thumbnail_ba.svg"
+                  alt="Menu"
+                  sx={{ width: { xs: 24, md: 28 }, height: { xs: 24, md: 28 } }}
+                />
+              </IconButton>
+              <IconButton aria-label="Vai alla home" onClick={() => navigate("/app")} sx={{ p: 0 }}>
+                <Box
+                  component="img"
+                  src="/logo.svg"
+                  alt="Pinewood"
+                  sx={{ width: { xs: 160, md: 220 }, height: "auto", display: "block" }}
+                />
               </IconButton>
             </Box>
-          )}
+            {!isGuest && (
+              <Box sx={{ display: "flex", alignItems: "center", px: "4px" }}>
+                <IconButton aria-label="Vai alla dashboard" onClick={() => navigate("/app/profile")} sx={{ p: 0 }}>
+                  <Avatar
+                    src={avatarSrc}
+                    sx={{
+                      width: { xs: 32, md: 40 },
+                      height: { xs: 32, md: 40 },
+                      p: 0,
+                      bgcolor: avatarSrc ? "#fff" : "primary.main",
+                      color: "white",
+                      fontSize: { xs: "0.8rem", md: "0.95rem" },
+                      fontWeight: 700,
+                      "& .MuiAvatar-img": { objectFit: "cover" },
+                    }}
+                  >
+                    {initials}
+                  </Avatar>
+                </IconButton>
+              </Box>
+            )}
+          </Box>
         </Toolbar>
       </AppBar>
 
@@ -155,65 +239,73 @@ export default function InternalHeader() {
             </IconButton>
           </Box>
           <Divider sx={{ mb: 1.2 }} />
-          <List sx={{ flexGrow: 1 }}>
-            <ListItemButton
-              onClick={() => {
-                setIsDrawerOpen(false);
-                navigate("/app");
-              }}
-            >
-              <ListItemText primary="Home" />
-            </ListItemButton>
-            <ListItemButton
-              onClick={() => {
-                setIsDrawerOpen(false);
-                navigate("/app/map");
-              }}
-            >
-              <ListItemText primary="Mappa" />
-            </ListItemButton>
+
+          <List sx={{ flexGrow: 1, px: 0 }}>
+            <NavItem
+              icon={<FilterHdrIcon />}
+              label="Home"
+              path="/app"
+              currentPath={cur}
+              onClick={() => go("/app")}
+            />
+            <NavItem
+              icon={<HikingIcon />}
+              label="Trails"
+              path="/app/trails"
+              currentPath={cur}
+              onClick={() => go("/app/trails")}
+            />
+            <NavItem
+              icon={<ExploreIcon />}
+              label="Mappa"
+              path="/app/map"
+              currentPath={cur}
+              onClick={() => go("/app/map")}
+            />
             {!isGuest && (
-              <ListItemButton
-                onClick={() => {
-                  setIsDrawerOpen(false);
-                  navigate("/app/my-trails");
-                }}
-              >
-                <ListItemText primary={t(lang, "myTrails")} />
-              </ListItemButton>
+              <NavItem
+                icon={<FavoriteBorderIcon />}
+                label={t(lang, "myTrails")}
+                path="/app/my-trails"
+                currentPath={cur}
+                onClick={() => go("/app/my-trails")}
+              />
             )}
             {!isGuest && (
-              <ListItemButton
-                onClick={() => {
-                  setIsDrawerOpen(false);
-                  navigate("/app/profile");
-                }}
-              >
-                <ListItemText primary="Dashboard" />
-              </ListItemButton>
+              <NavItem
+                icon={<AccountCircleIcon />}
+                label="Dashboard"
+                path="/app/profile"
+                currentPath={cur}
+                onClick={() => go("/app/profile")}
+              />
             )}
             {!isGuest && user?.role === "super_admin" && (
-              <ListItemButton
-                onClick={() => {
-                  setIsDrawerOpen(false);
-                  navigate("/app/admin");
-                }}
-              >
-                <ListItemText primary="Super Admin" />
-              </ListItemButton>
+              <NavItem
+                icon={<AdminPanelSettingsIcon />}
+                label="Super Admin"
+                path="/app/admin"
+                currentPath={cur}
+                onClick={() => go("/app/admin")}
+              />
             )}
           </List>
+
           {isGuest && (
             <>
               <Divider sx={{ my: 1 }} />
               <List>
                 <ListItemButton
-                  onClick={() => {
-                    setIsDrawerOpen(false);
-                    navigate("/", { state: { openLogin: true } });
-                  }}
+                  onClick={() => go("/")}
+                  sx={{ borderRadius: 2 }}
                 >
-                  <ListItemText primary={t(lang, "login")} />
+                  <ListItemIcon sx={{ minWidth: 36, color: "text.secondary" }}>
+                    <LoginIcon />
+                  </ListItemIcon>
+                  <ListItemText
+                    primary={t(lang, "login")}
+                    primaryTypographyProps={{ fontWeight: 700, fontSize: "0.95rem" }}
+                  />
                 </ListItemButton>
               </List>
             </>
@@ -227,8 +319,15 @@ export default function InternalHeader() {
                     setIsDrawerOpen(false);
                     await handleLogout();
                   }}
+                  sx={{ borderRadius: 2 }}
                 >
-                  <ListItemText primary={t(lang, "logout")} />
+                  <ListItemIcon sx={{ minWidth: 36, color: "text.secondary" }}>
+                    <LogoutIcon />
+                  </ListItemIcon>
+                  <ListItemText
+                    primary={t(lang, "logout")}
+                    primaryTypographyProps={{ fontWeight: 700, fontSize: "0.95rem" }}
+                  />
                 </ListItemButton>
               </List>
             </>

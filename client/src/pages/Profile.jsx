@@ -1,10 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import {
-  Alert,
   Avatar,
   Box,
   Button,
-  Container,
   Dialog,
   DialogActions,
   DialogContent,
@@ -14,6 +12,8 @@ import {
 } from "@mui/material";
 import { useNavigate } from "react-router-dom";
 import InternalHeader from "../components/InternalHeader.jsx";
+import AppBanner from "../components/AppBanner.jsx";
+import PageContainer from "../components/PageContainer.jsx";
 import AppDialogTitle from "../components/AppDialogTitle.jsx";
 import { apiFetch } from "../services/api.js";
 
@@ -25,7 +25,7 @@ export default function Profile() {
   const [avatarFile, setAvatarFile] = useState(null);
   const [avatarPreviewSrc, setAvatarPreviewSrc] = useState("");
   const [avatarVersion, setAvatarVersion] = useState(0);
-  const [notice, setNotice] = useState("");
+  const [notice, setNotice] = useState({ type: "", text: "" });
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [currentPassword, setCurrentPassword] = useState("");
@@ -79,7 +79,7 @@ export default function Profile() {
   async function saveProfile() {
     const shouldChangePassword = Boolean(currentPassword && newPassword);
     if ((currentPassword && !newPassword) || (!currentPassword && newPassword)) {
-      setNotice("Compila sia password attuale che nuova password");
+      setNotice({ type: "warning", text: "Compila sia password attuale che nuova password" });
       return;
     }
 
@@ -91,7 +91,7 @@ export default function Profile() {
       });
       if (!pwdRes.ok) {
         const data = await pwdRes.json().catch(() => ({}));
-        setNotice(data.error || "Errore cambio password");
+        setNotice({ type: "error", text: data.error || "Errore cambio password" });
         return;
       }
       setCurrentPassword("");
@@ -103,7 +103,7 @@ export default function Profile() {
     if (avatarFile) form.append("avatar", avatarFile);
     const res = await apiFetch("/api/users/me", { method: "PATCH", body: form });
     if (!res.ok) {
-      setNotice("Errore salvataggio profilo");
+      setNotice({ type: "error", text: "Errore salvataggio profilo" });
       return;
     }
     const user = await res.json();
@@ -115,7 +115,10 @@ export default function Profile() {
       trails_uploaded: user.trails_uploaded ?? 0,
       trails_saved: user.trails_saved ?? 0,
     });
-    setNotice(shouldChangePassword ? "Profilo e password aggiornati" : "Profilo aggiornato");
+    setNotice({
+      type: "success",
+      text: shouldChangePassword ? "Profilo e password aggiornati" : "Profilo aggiornato",
+    });
   }
 
   async function deleteAccount() {
@@ -123,7 +126,7 @@ export default function Profile() {
     try {
       const res = await apiFetch("/api/users/me", { method: "DELETE" });
       if (!res.ok) {
-        setNotice("Errore eliminazione account");
+        setNotice({ type: "error", text: "Errore eliminazione account" });
         return;
       }
       localStorage.removeItem("pinewood_access_token");
@@ -139,11 +142,13 @@ export default function Profile() {
   return (
     <Box sx={{ minHeight: "100vh", bgcolor: "background.default" }}>
       <InternalHeader />
-      <Container maxWidth="sm" sx={{ py: 3 }}>
-        <Stack spacing={2}>
-          <Typography variant="h5" sx={{ fontWeight: 700 }}>
-            Dashboard
-          </Typography>
+      <AppBanner
+        message={notice.text}
+        type={notice.type === "warning" ? "warning" : notice.type === "error" ? "error" : "success"}
+        onDismiss={() => setNotice({ type: "", text: "" })}
+      />
+      <PageContainer sx={{ py: { xs: 3, md: 4 } }}>
+        <Stack spacing={{ xs: 2, md: 2.5 }}>
           <Stack direction="row" spacing={1}>
             <Box sx={{ flex: 1, bgcolor: "#f4f8f2", borderRadius: 1.4, p: 1.2 }}>
               <Typography variant="caption" color="text.secondary">Caricati</Typography>
@@ -154,7 +159,6 @@ export default function Profile() {
               <Typography sx={{ fontWeight: 800 }}>{stats.trails_saved}</Typography>
             </Box>
           </Stack>
-          {notice && <Alert severity="success">{notice}</Alert>}
           <Stack direction="row" spacing={1.5} alignItems="center">
             <Avatar
               src={visibleAvatarSrc}
@@ -197,7 +201,7 @@ export default function Profile() {
             </Button>
           </Stack>
         </Stack>
-      </Container>
+      </PageContainer>
       <Dialog open={deleteDialogOpen} onClose={() => setDeleteDialogOpen(false)}>
         <AppDialogTitle title="Eliminare account?" />
         <DialogContent>

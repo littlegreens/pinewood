@@ -12,11 +12,6 @@ import {
   getUploadsRoot,
   resolveUploadAbsolutePath,
 } from "../services/fileStorage.js";
-import {
-  enrichTrailDescriptionWithGemini,
-  scheduleTrailDescriptionEnrichment,
-} from "../services/trailAiEnrichment.js";
-
 const router = Router();
 
 async function ensureTrailVisibilityDefaults() {
@@ -198,10 +193,6 @@ router.post("/upload", authMiddleware, upload.single("file"), async (req, res) =
         removeOnFail: false,
       }
     );
-
-    if (req.user.role === "super_admin" && !(initialDescription || "").trim()) {
-      scheduleTrailDescriptionEnrichment(result.rows[0].id);
-    }
 
     return res.status(201).json({ trailId: result.rows[0].id, status: result.rows[0].parse_status });
   } catch (error) {
@@ -406,32 +397,6 @@ router.patch("/:id", authMiddleware, async (req, res) => {
     ]
   );
   return res.json({ ok: true });
-});
-
-router.post("/:id/generate-description-ai", authMiddleware, async (req, res) => {
-  const trailRes = await pool.query(
-    `SELECT id, user_id
-     FROM trails
-     WHERE id = $1
-     LIMIT 1`,
-    [req.params.id]
-  );
-  const trail = trailRes.rows[0];
-  if (!trail) {
-    return res.status(404).json({ error: "Trail non trovato" });
-  }
-  if (trail.user_id !== req.user.id) {
-    return res.status(403).json({ error: "Non autorizzato" });
-  }
-  if (req.user.role !== "super_admin") {
-    return res.status(403).json({ error: "Accesso riservato al super admin" });
-  }
-
-  const out = await enrichTrailDescriptionWithGemini(req.params.id, { force: true });
-  if (out.error) {
-    return res.status(502).json({ error: `Generazione AI fallita: ${out.error}` });
-  }
-  return res.json(out);
 });
 
 router.delete("/:id", authMiddleware, async (req, res) => {

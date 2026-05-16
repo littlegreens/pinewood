@@ -52,4 +52,5 @@ setInterval(() => {
 
 app.listen(env.port, "0.0.0.0", () => {
   console.log(`Pinewood API su http://0.0.0.0:${env.port}`);
+  console.log(`Link email (CLIENT_URL): ${env.clientUrl}`);
 });

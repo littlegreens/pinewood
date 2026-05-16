@@ -4,7 +4,6 @@ import {
   Box,
   Button,
   Checkbox,
-  Chip,
   Dialog,
   DialogActions,
   DialogContent,
@@ -35,18 +34,23 @@ import {
   requestDocumentFullscreen,
 } from "../utils/screenChrome.js";
 import AppDialogTitle from "../components/AppDialogTitle.jsx";
+import AppBanner from "../components/AppBanner.jsx";
+import { buildElevationProfilePath as buildElevationProfilePathBase } from "../utils/elevationProfilePath.js";
 
 const POCKET_INTRO_SKIP_KEY = "pinewood_skip_pocket_intro";
 const START_GATE_RADIUS_M = 300;
 const GPS_START_TIMEOUT_MS = 14000;
-const OFF_ROUTE_VIBRATE_PULSE_MS = 3000;
-const OFF_ROUTE_VOICE_INTERVAL_MS = 12000;
+const OFF_ROUTE_VIBRATE_PULSE_MS = 900;
+const OFF_ROUTE_VOICE_INTERVAL_MS = 3000;
 const NAV_RUNTIME_STATE_KEY_PREFIX = "pinewood_nav_runtime_";
-const OFF_ROUTE_ENTER_M = 50;
-const OFF_ROUTE_EXIT_M = 35;
+/** Soglia ortogonale minima dal tracciato (m). ~30 m: più reattivo del precedente 50 m; uscita più stretta per isteresi. */
+const OFF_ROUTE_ENTER_M = 30;
+const OFF_ROUTE_EXIT_M = 22;
 const OFF_ROUTE_ENTER_DELAY_MS = 4500;
 const OFF_ROUTE_EXIT_DELAY_MS = 2500;
-const VISIT_MARGIN_M = 8;
+/** Aggiorna heading in React solo sopra questa soglia (°) per meno re-render / icon Leaflet. */
+const HEADING_PUBLISH_MIN_DELTA_DEG = 2;
+
 const OFFLINE_TRAIL_KEY_PREFIX = "pw_trail_";
 const LEGACY_OFFLINE_TRAIL_KEY_PREFIX = "pinewood_offline_trail_";
 
@@ -132,7 +136,6 @@ export default function Navigation() {
     return null;
   });
   const [pocketMode, setPocketMode] = useState(false);
-  const [completionPct, setCompletionPct] = useState(null);
   const [deviationsCount, setDeviationsCount] = useState(0);
   const [isOffRoute, setIsOffRoute] = useState(false);
   const [actualTrack, setActualTrack] = useState([]);
@@ -144,6 +147,7 @@ export default function Navigation() {
   const [userHeading, setUserHeading] = useState(null);
   const prevPosRef = useRef(null);
   const lastHeadingRef = useRef(null);
+  const publishedHeadingRef = useRef(null);
   const pocketTouchStartY = useRef(null);
   const lockDragOffsetYRef = useRef(0);
   const [lockDragOffsetY, setLockDragOffsetY] = useState(0);
@@ -154,6 +158,8 @@ export default function Navigation() {
   const pocketLayerRef = useRef(null);
   const [pocketIntroOpen, setPocketIntroOpen] = useState(false);
   const [pocketIntroSkipChecked, setPocketIntroSkipChecked] = useState(false);
+  /** In tasca: schermo visivamente più scuro fino al primo tocco (non è la luminosità di sistema). */
+  const [pocketVisualAwake, setPocketVisualAwake] = useState(false);
   /** checking = verifica 300 m dal tracciato / GPS; ready = navigazione attiva */
   const [startGate, setStartGate] = useState("checking");
   const sessionAbortedRef = useRef(false);
@@ -165,9 +171,6 @@ export default function Navigation() {
   const unlockDragOffsetYRef = useRef(0);
   const [unlockDragOffsetY, setUnlockDragOffsetY] = useState(0);
   const [unlockDragging, setUnlockDragging] = useState(false);
-  const [visitedIntervals, setVisitedIntervals] = useState([]);
-  const visitedIntervalsRef = useRef([]);
-  const lastAlongRef = useRef(null);
   const pendingOffRouteSinceRef = useRef(null);
   const pendingOnRouteSinceRef = useRef(null);
   const [showTrailLine, setShowTrailLine] = useState(false);
@@ -204,28 +207,6 @@ export default function Navigation() {
       localStorage.removeItem(offlineTrailStorageKey(trailIdFromState));
       return null;
     }
-  }
-
-  function mergeIntervals(intervals, incoming) {
-    const valid = [...intervals, incoming]
-      .filter((r) => Number.isFinite(r[0]) && Number.isFinite(r[1]) && r[1] >= r[0])
-      .sort((a, b) => a[0] - b[0]);
-    if (valid.length === 0) return [];
-    const out = [valid[0]];
-    for (let i = 1; i < valid.length; i += 1) {
-      const cur = valid[i];
-      const last = out[out.length - 1];
-      if (cur[0] <= last[1] + 1) {
-        last[1] = Math.max(last[1], cur[1]);
-      } else {
-        out.push([cur[0], cur[1]]);
-      }
-    }
-    return out;
-  }
-
-  function coveredMeters(intervals) {
-    return intervals.reduce((acc, r) => acc + Math.max(0, r[1] - r[0]), 0);
   }
 
   useLayoutEffect(() => {
@@ -313,6 +294,7 @@ export default function Navigation() {
     let cancelled = false;
     prevPosRef.current = null;
     lastHeadingRef.current = null;
+    publishedHeadingRef.current = null;
     setUserHeading(null);
     async function load() {
       if (cancelled) return;
@@ -376,10 +358,19 @@ export default function Navigation() {
           }
           prevPosRef.current = pos;
           setPosition(pos);
-          setUserHeading(h);
+          if (typeof h === "number" && !Number.isNaN(h)) {
+            const pub = publishedHeadingRef.current;
+            if (pub == null || Math.abs(shortestAngleDeltaDeg(pub, h)) >= HEADING_PUBLISH_MIN_DELTA_DEG) {
+              publishedHeadingRef.current = h;
+              setUserHeading(h);
+            }
+          } else {
+            publishedHeadingRef.current = null;
+            setUserHeading(h);
+          }
         },
         () => {},
-        { enableHighAccuracy: true, maximumAge: 0, timeout: 10000 }
+        { enableHighAccuracy: true, maximumAge: 0, timeout: 10_000 }
       );
     }
     load();
@@ -400,9 +391,8 @@ export default function Navigation() {
     return out;
   }, [line]);
 
-  useEffect(() => {
-    if (startGate !== "ready") return;
-    if (!position || line.length === 0) return;
+  const trailProjection = useMemo(() => {
+    if (startGate !== "ready" || !position || line.length === 0) return null;
     let minSegDist = Number.POSITIVE_INFINITY;
     let bestAlong = 0;
     for (let i = 0; i < line.length - 1; i += 1) {
@@ -414,21 +404,12 @@ export default function Navigation() {
         bestAlong = along;
       }
     }
-    const totalDist = Math.max(1, cumulativeDistances[cumulativeDistances.length - 1]);
-    let alongForCoverage = bestAlong;
-    if (lastAlongRef.current != null && Math.abs(bestAlong - lastAlongRef.current) > 250) {
-      alongForCoverage = lastAlongRef.current;
-    }
-    const prevAlong = lastAlongRef.current ?? alongForCoverage;
-    const from = Math.max(0, Math.min(prevAlong, alongForCoverage) - VISIT_MARGIN_M);
-    const to = Math.min(totalDist, Math.max(prevAlong, alongForCoverage) + VISIT_MARGIN_M);
-    const merged = mergeIntervals(visitedIntervalsRef.current, [from, to]);
-    visitedIntervalsRef.current = merged;
-    setVisitedIntervals(merged);
-    const covered = coveredMeters(merged);
-    const pct = Math.round((covered / totalDist) * 100);
-    setCompletionPct(Math.max(0, Math.min(100, pct)));
-    lastAlongRef.current = alongForCoverage;
+    return { minSegDist, bestAlong };
+  }, [startGate, position, line, cumulativeDistances]);
+
+  useEffect(() => {
+    if (!trailProjection) return;
+    const { minSegDist, bestAlong } = trailProjection;
     setUserDistanceM(bestAlong);
     const now = Date.now();
     const currentlyOff = wasOffRouteRef.current;
@@ -465,20 +446,17 @@ export default function Navigation() {
       pendingOffRouteSinceRef.current = null;
       setIsOffRoute(false);
     }
-  }, [position, line, cumulativeDistances, actualTrack.length, lang, startGate]);
+  }, [trailProjection, lang]);
 
   useEffect(() => {
     setStartGate("checking");
     sessionAbortedRef.current = false;
     setPocketMode(false);
+    publishedHeadingRef.current = null;
     setActualTrack([]);
-    setCompletionPct(null);
     setDeviationsCount(0);
     setIsOffRoute(false);
     wasOffRouteRef.current = false;
-    visitedIntervalsRef.current = [];
-    setVisitedIntervals([]);
-    lastAlongRef.current = null;
     pendingOffRouteSinceRef.current = null;
     pendingOnRouteSinceRef.current = null;
     setUserDistanceM(null);
@@ -590,7 +568,6 @@ export default function Navigation() {
       }
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed.actualTrack)) setActualTrack(parsed.actualTrack);
-      if (typeof parsed.completionPct === "number") setCompletionPct(parsed.completionPct);
       if (typeof parsed.deviationsCount === "number") setDeviationsCount(parsed.deviationsCount);
       if (typeof parsed.isOffRoute === "boolean") {
         setIsOffRoute(parsed.isOffRoute);
@@ -600,16 +577,13 @@ export default function Navigation() {
       if (typeof parsed.userHeading === "number") {
         setUserHeading(parsed.userHeading);
         lastHeadingRef.current = parsed.userHeading;
+        publishedHeadingRef.current = parsed.userHeading;
       }
       if (typeof parsed.startGate === "string" && parsed.startGate !== "checking") {
         setStartGate(parsed.startGate);
       }
       if (typeof parsed.pocketMode === "boolean") setPocketMode(parsed.pocketMode);
       if (typeof parsed.chromeUnlocked === "boolean") setChromeUnlocked(parsed.chromeUnlocked);
-      if (Array.isArray(parsed.visitedIntervals)) {
-        visitedIntervalsRef.current = parsed.visitedIntervals;
-        setVisitedIntervals(parsed.visitedIntervals);
-      }
     } catch {
       /* ignore corrupted runtime snapshot */
     } finally {
@@ -620,7 +594,6 @@ export default function Navigation() {
   useEffect(() => {
     if (!runtimeHydratedRef.current) return;
     const snapshot = {
-      completionPct,
       deviationsCount,
       actualTrack,
       isOffRoute,
@@ -629,7 +602,6 @@ export default function Navigation() {
       startGate,
       pocketMode,
       chromeUnlocked,
-      visitedIntervals,
       updatedAt: Date.now(),
     };
     try {
@@ -639,7 +611,6 @@ export default function Navigation() {
     }
   }, [
     sessionId,
-    completionPct,
     deviationsCount,
     actualTrack,
     isOffRoute,
@@ -648,7 +619,6 @@ export default function Navigation() {
     startGate,
     pocketMode,
     chromeUnlocked,
-    visitedIntervals,
   ]);
 
   useEffect(() => {
@@ -707,6 +677,8 @@ export default function Navigation() {
     };
   }, [pocketMode]);
 
+  // Camera iniziale (o dopo cambio traccia / uscita tasca). NON legare a `position`:
+  // ogni tick GPS rilanciava flyTo, nascondeva la polyline e annullava pan/zoom manuali.
   useEffect(() => {
     if (!mapInstance || line.length === 0) return;
     if (pocketMode) return;
@@ -737,7 +709,7 @@ export default function Navigation() {
     return () => {
       mapInstance.off("moveend", onMoveEnd);
     };
-  }, [mapInstance, line, position, pocketMode]);
+  }, [mapInstance, line, pocketMode]);
 
   useEffect(() => {
     if (!mapInstance || startGate !== "ready" || !position) return;
@@ -752,6 +724,36 @@ export default function Navigation() {
     });
     centeredOnStartRef.current = true;
   }, [mapInstance, startGate, position, pocketMode]);
+
+  /** Course-up: direzione di marcia verso l'alto (non nord fisso in alto). */
+  useEffect(() => {
+    if (!mapInstance || startGate !== "ready" || pocketMode) return;
+    const pane = mapInstance.getPane?.("mapPane");
+    if (!pane) return;
+
+    const applyCourseUp = () => {
+      if (typeof userHeading !== "number" || Number.isNaN(userHeading) || !position) {
+        pane.style.transform = "";
+        pane.style.transformOrigin = "";
+        return;
+      }
+      const pt = mapInstance.latLngToContainerPoint(position);
+      pane.style.transformOrigin = `${pt.x}px ${pt.y}px`;
+      pane.style.transform = `rotate(${-userHeading}deg)`;
+    };
+
+    applyCourseUp();
+    mapInstance.on("move", applyCourseUp);
+    mapInstance.on("zoom", applyCourseUp);
+    mapInstance.on("zoomend", applyCourseUp);
+    return () => {
+      mapInstance.off("move", applyCourseUp);
+      mapInstance.off("zoom", applyCourseUp);
+      mapInstance.off("zoomend", applyCourseUp);
+      pane.style.transform = "";
+      pane.style.transformOrigin = "";
+    };
+  }, [mapInstance, startGate, pocketMode, userHeading, position]);
 
   useEffect(() => {
     if (startGate !== "ready") return;
@@ -778,14 +780,14 @@ export default function Navigation() {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          completion_pct: completionPct,
+          completion_pct: null,
           deviations_count: deviationsCount,
           actual_geom: actualTrack,
         }),
       });
     }, 10000);
     return () => clearInterval(interval);
-  }, [sessionId, completionPct, deviationsCount, actualTrack, startGate, isOfflineLocalSession]);
+  }, [sessionId, deviationsCount, actualTrack, startGate, isOfflineLocalSession]);
 
   function buildExitNavigationTarget() {
     const st = location.state;
@@ -815,7 +817,7 @@ export default function Navigation() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          completion_pct: completionPct,
+          completion_pct: null,
           deviations_count: deviationsCount,
           actual_geom: actualTrack,
         }),
@@ -853,29 +855,18 @@ export default function Navigation() {
   }
 
   function buildElevationPath(profile, width, height, pad) {
-    const minD = profile[0].distance_m;
-    const maxD = profile[profile.length - 1].distance_m || minD + 1;
-    const elevs = profile.map((p) => p.elevation_m);
-    const minE = Math.min(...elevs);
-    const maxE = Math.max(...elevs);
-    const spanD = Math.max(1, maxD - minD);
-    const spanE = Math.max(1, maxE - minE);
-    const points = profile.map((p) => {
-      const x = pad + ((p.distance_m - minD) / spanD) * (width - pad * 2);
-      const y = height - pad - ((p.elevation_m - minE) / spanE) * (height - pad * 2);
-      return { x, y };
-    });
-    const d = points.map((p, i) => `${i === 0 ? "M" : "L"}${p.x.toFixed(1)} ${p.y.toFixed(1)}`).join(" ");
+    const base = buildElevationProfilePathBase(profile, width, height, pad);
+    const { minD, maxD, spanD, pad: p, width: w } = base;
     const userX =
       userDistanceM == null
         ? null
-        : pad + ((Math.min(maxD, Math.max(minD, userDistanceM)) - minD) / spanD) * (width - pad * 2);
+        : p + ((Math.min(maxD, Math.max(minD, userDistanceM)) - minD) / spanD) * (w - p * 2);
     const waypointDots = (waypoints || [])
       .filter((wp) => Number.isFinite(wp.distance_from_start_m))
       .map((wp) => ({
-        x: pad + ((wp.distance_from_start_m - minD) / spanD) * (width - pad * 2),
+        x: p + ((wp.distance_from_start_m - minD) / spanD) * (w - p * 2),
       }));
-    return { d, minE: Math.round(minE), maxE: Math.round(maxE), userX, waypointDots };
+    return { d: base.d, minE: base.minE, maxE: base.maxE, userX, waypointDots };
   }
 
   function onLockTouchStart(e) {
@@ -1085,22 +1076,11 @@ export default function Navigation() {
                 zIndex: 1200,
                 display: "flex",
                 alignItems: "flex-start",
-                justifyContent: "space-between",
+                justifyContent: "flex-end",
                 gap: 1,
                 pointerEvents: "none",
               }}
             >
-              <Chip
-                label={`${t(lang, "navProgress")}: ${completionPct ?? "--"}${completionPct != null ? "%" : ""}`}
-                sx={{
-                  pointerEvents: "auto",
-                  bgcolor: "rgba(255,255,255,0.94)",
-                  color: "#111",
-                  fontWeight: 700,
-                  fontSize: "0.74rem",
-                  boxShadow: "0 2px 10px rgba(0,0,0,0.12)",
-                }}
-              />
               <IconButton
                 onClick={centerOnUser}
                 sx={{
@@ -1117,36 +1097,6 @@ export default function Navigation() {
                 <MyLocationIcon fontSize="small" />
               </IconButton>
             </Box>
-            )}
-
-            {startGate === "ready" && isOffRoute && (
-              <Box
-                className="nav-off-toast"
-                sx={{
-                  position: "fixed",
-                  left: 14,
-                  right: 14,
-                  bottom: "calc(max(10px, env(safe-area-inset-bottom)) + 72px)",
-                  zIndex: 1450,
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  gap: 0.8,
-                  px: 1.6,
-                  py: 0.85,
-                  borderRadius: 1.5,
-                  backgroundColor: "#fff3cd",
-                  color: "#5c4300",
-                  boxShadow: "0 4px 14px rgba(0,0,0,0.16)",
-                  border: "1px solid #f1d58a",
-                  pointerEvents: "none",
-                }}
-              >
-                <WarningAmberRoundedIcon sx={{ fontSize: 21, color: "#b36b00", flexShrink: 0 }} />
-                <Typography sx={{ fontWeight: 700, fontSize: "0.88rem", lineHeight: 1.25 }}>
-                  {t(lang, "navOffRouteAlertShort")}
-                </Typography>
-              </Box>
             )}
 
             {startGate === "ready" && (
@@ -1256,6 +1206,8 @@ export default function Navigation() {
       ) : (
         <Stack
           ref={pocketLayerRef}
+          onTouchStart={() => setPocketVisualAwake(true)}
+          onPointerDown={() => setPocketVisualAwake(true)}
           sx={{
             position: "fixed",
             inset: 0,
@@ -1274,6 +1226,8 @@ export default function Navigation() {
             bgcolor: "#000",
             WebkitTouchCallout: "none",
             userSelect: "none",
+            filter: pocketVisualAwake ? "none" : "brightness(0.42)",
+            transition: "filter 280ms ease-out",
           }}
         >
           <img
@@ -1290,8 +1244,8 @@ export default function Navigation() {
                 width: 74,
                 height: 74,
                 borderRadius: "50%",
-                border: isOffRoute ? "2px solid #3d0a0a" : "2px solid rgba(255,255,255,0.92)",
-                bgcolor: isOffRoute ? "rgba(55, 12, 12, 0.95)" : "transparent",
+                border: "2px solid rgba(255,255,255,0.92)",
+                bgcolor: "transparent",
                 display: "grid",
                 placeItems: "center",
                 transform: `translateY(${lockDragOffsetY - 8}px)`,
@@ -1299,7 +1253,7 @@ export default function Navigation() {
                 touchAction: "none",
               }}
             >
-              <LockOutlinedIcon sx={{ fontSize: 38, opacity: 0.95, color: isOffRoute ? "#ff8a80" : "#fff" }} />
+              <LockOutlinedIcon sx={{ fontSize: 38, opacity: 0.95, color: "#fff" }} />
             </Box>
             <Typography sx={{ mt: 1.1, fontSize: "0.8rem", opacity: 0.9, fontWeight: 400 }}>
               {t(lang, "unlockBySwipe")}
@@ -1364,6 +1318,18 @@ export default function Navigation() {
           </Button>
         </DialogActions>
       </Dialog>
+
+      <AppBanner
+        message={startGate === "ready" && isOffRoute ? t(lang, "navOffRouteAlertShort") : ""}
+        type="warning"
+        durationMs={0}
+        top={
+          pocketMode
+            ? "max(20px, calc(env(safe-area-inset-top) + 10px))"
+            : "max(148px, calc(env(safe-area-inset-top) + 108px))"
+        }
+        sx={{ zIndex: 3200 }}
+      />
     </Box>
   );
 }

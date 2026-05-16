@@ -6,7 +6,13 @@ import {
   startBackgroundLocationTracking,
   stopBackgroundLocationTracking,
 } from "./services/locationTracker.js";
-import { lockPortraitOrientation } from "./utils/screenChrome.js";
+import { lockPortraitOrientation, unlockOrientation } from "./utils/screenChrome.js";
+
+const DESKTOP_MIN_WIDTH_PX = 900;
+
+function isDesktopViewport() {
+  return typeof window !== "undefined" && window.matchMedia(`(min-width: ${DESKTOP_MIN_WIDTH_PX}px)`).matches;
+}
 
 function scrollDocumentToTop() {
   const root = document.scrollingElement ?? document.documentElement;
@@ -42,6 +48,10 @@ export default function App() {
 
   useLayoutEffect(() => {
     function apply() {
+      if (isDesktopViewport()) {
+        unlockOrientation();
+        return;
+      }
       lockPortraitOrientation();
     }
     apply();

@@ -11,8 +11,8 @@ export function playOffRouteBeep() {
     gain.connect(ctx.destination);
     osc.frequency.value = 880;
     osc.type = "sine";
-    gain.gain.setValueAtTime(0.12, ctx.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.18);
+    gain.gain.setValueAtTime(0.16, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.22);
     osc.start(ctx.currentTime);
     osc.stop(ctx.currentTime + 0.18);
     setTimeout(() => ctx.close().catch(() => {}), 300);
@@ -26,27 +26,33 @@ export function vibrateOffRoute() {
   try {
     const v = navigator?.vibrate;
     if (typeof v !== "function") return;
-    const pattern = [0, 280, 100, 280, 100, 400];
+    const pattern = [0, 450, 80, 450, 80, 480, 100, 400, 100, 480, 120, 420, 140, 380];
     v.call(navigator, pattern);
     window.setTimeout(() => {
       try {
-        v.call(navigator, [180, 80, 180]);
+        v.call(navigator, [0, 380, 70, 380, 70, 420, 90, 360, 90, 420, 110, 340]);
       } catch {
         /* ignore */
       }
     }, 450);
+    window.setTimeout(() => {
+      try {
+        v.call(navigator, [0, 320, 60, 320, 60, 360, 80, 300]);
+      } catch {
+        /* ignore */
+      }
+    }, 900);
   } catch {
     /* ignore */
   }
 }
 
-/** Impulso breve mentre resti fuori traccia (ripetuto dal client con throttle). */
+/** Impulso mentre resti fuori traccia (ripetuto ~ogni secondo dal client). */
 export function vibrateOffRoutePulse() {
   try {
     const v = navigator?.vibrate;
     if (typeof v !== "function") return;
-    // Pulse piu evidente, simile a uno "squillo breve".
-    v.call(navigator, [220, 110, 220, 110, 280]);
+    v.call(navigator, [0, 420, 70, 420, 70, 450, 90, 400, 90, 450, 110, 380, 130, 360]);
   } catch {
     /* ignore */
   }

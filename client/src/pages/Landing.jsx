@@ -19,6 +19,7 @@ import {
 import { useLocation, useNavigate } from "react-router-dom";
 import { detectLanguage, t } from "../services/i18n.js";
 import { setStoredUserProfile } from "../services/api.js";
+import { AUTH_MSG, authMessageColor, isEmailNotVerifiedResponse } from "../services/authMessages.js";
 
 const API = import.meta.env.VITE_API_URL || "";
 
@@ -45,7 +46,13 @@ export default function Landing() {
   const [acceptTerms, setAcceptTerms] = useState(false);
   const [marketingOptIn, setMarketingOptIn] = useState(false);
   const [message, setMessage] = useState("");
+  const [messageTone, setMessageTone] = useState("");
   const [busy, setBusy] = useState(false);
+
+  function showMessage(text, tone = "info") {
+    setMessage(text);
+    setMessageTone(tone);
+  }
   const [legalModal, setLegalModal] = useState("");
   const [verifyCode, setVerifyCode] = useState("");
   const [pendingVerificationEmail, setPendingVerificationEmail] = useState("");
@@ -131,7 +138,7 @@ export default function Landing() {
         setIsRegister(false);
         setPendingVerificationEmail("");
         setVerifyCode("");
-        setMessage("Email verificata con successo. Accedi dal tab Login.");
+        showMessage(AUTH_MSG.verifyLinkOk, "success");
       } catch (error) {
         const raw = String(error.message || "");
         if (/gi[aà]\s+verificat/i.test(raw)) {
@@ -139,9 +146,9 @@ export default function Landing() {
           setIsRegister(false);
           setPendingVerificationEmail("");
           setVerifyCode("");
-          setMessage("Email gia verificata. Accedi dal tab Login.");
+          showMessage(AUTH_MSG.verifyAlready, "success");
         } else {
-          setMessage(raw || "Verifica email fallita");
+          showMessage(raw || AUTH_MSG.verifyFailed, "error");
         }
       } finally {
         window.history.replaceState({}, document.title, "/");
@@ -170,6 +177,7 @@ export default function Landing() {
     e.preventDefault();
     setBusy(true);
     setMessage("");
+    setMessageTone("");
     try {
       const endpoint = isRegister ? "/api/auth/register" : "/api/auth/login";
       const payload = isRegister
@@ -183,18 +191,26 @@ export default function Landing() {
       });
       const data = await readJsonSafe(response);
       if (!response.ok) {
+        if (!isRegister && isEmailNotVerifiedResponse(data, response.status)) {
+          setIsRegister(false);
+          setPendingVerificationEmail(String(email).trim().toLowerCase());
+          setVerifyCode("");
+          showMessage(AUTH_MSG.emailNotVerified, "info");
+          setBusy(false);
+          return;
+        }
         const fallback =
           response.status === 401
-            ? "Credenziali non valide"
+            ? AUTH_MSG.loginFailed
             : response.status === 403
               ? "Accesso non consentito"
               : t(lang, "loginFailed");
         throw new Error(data.error || fallback);
       }
       if (isRegister) {
-        setPendingVerificationEmail(email);
+        setPendingVerificationEmail(String(email).trim().toLowerCase());
         setVerifyCode("");
-        setMessage("Registrazione creata. Controlla la mail per codice o link di verifica.");
+        showMessage(AUTH_MSG.registerOk, "info");
         setBusy(false);
         return;
       }
@@ -204,9 +220,10 @@ export default function Landing() {
       setShowLogin(false);
       setIsRegister(false);
       setMessage("");
+      setMessageTone("");
       navigate("/app");
     } catch (error) {
-      setMessage(error.message || t(lang, "loginFailed"));
+      showMessage(error.message || t(lang, "loginFailed"), "error");
     } finally {
       setBusy(false);
     }
@@ -216,6 +233,7 @@ export default function Landing() {
     if (!pendingVerificationEmail || !verifyCode) return;
     setBusy(true);
     setMessage("");
+    setMessageTone("");
     try {
       const response = await fetch(`${API}/api/auth/verify-email`, {
         method: "POST",
@@ -224,13 +242,13 @@ export default function Landing() {
         body: JSON.stringify({ email: pendingVerificationEmail, code: verifyCode }),
       });
       const data = await readJsonSafe(response);
-      if (!response.ok) throw new Error(data.error || "Verifica email fallita");
+      if (!response.ok) throw new Error(data.error || AUTH_MSG.verifyFailed);
       setPendingVerificationEmail("");
       setVerifyCode("");
       setIsRegister(false);
-      setMessage("Email verificata. Ora puoi fare login.");
+      showMessage(AUTH_MSG.verifyOk, "success");
     } catch (error) {
-      setMessage(error.message || "Verifica email fallita");
+      showMessage(error.message || AUTH_MSG.verifyFailed, "error");
     } finally {
       setBusy(false);
     }
@@ -240,6 +258,7 @@ export default function Landing() {
     if (!pendingVerificationEmail) return;
     setBusy(true);
     setMessage("");
+    setMessageTone("");
     try {
       const response = await fetch(`${API}/api/auth/resend-verification`, {
         method: "POST",
@@ -248,10 +267,10 @@ export default function Landing() {
         body: JSON.stringify({ email: pendingVerificationEmail }),
       });
       const data = await readJsonSafe(response);
-      if (!response.ok) throw new Error(data.error || "Invio verifica fallito");
-      setMessage("Nuova email di verifica inviata.");
+      if (!response.ok) throw new Error(data.error || AUTH_MSG.resendFailed);
+      showMessage(AUTH_MSG.resendOk, "success");
     } catch (error) {
-      setMessage(error.message || "Invio verifica fallito");
+      showMessage(error.message || AUTH_MSG.resendFailed, "error");
     } finally {
       setBusy(false);
     }
@@ -261,6 +280,7 @@ export default function Landing() {
     if (!forgotEmail) return;
     setForgotBusy(true);
     setMessage("");
+    setMessageTone("");
     try {
       const response = await fetch(`${API}/api/auth/forgot-password`, {
         method: "POST",
@@ -269,11 +289,11 @@ export default function Landing() {
         body: JSON.stringify({ email: forgotEmail }),
       });
       const data = await readJsonSafe(response);
-      if (!response.ok) throw new Error(data.error || "Invio mail recupero fallito");
+      if (!response.ok) throw new Error(data.error || AUTH_MSG.forgotFailed);
       setForgotOpen(false);
-      setMessage("Mail inviata! Controlla la tua casella di posta");
+      showMessage(AUTH_MSG.forgotOk, "success");
     } catch (error) {
-      setMessage(error.message || "Invio mail recupero fallito");
+      showMessage(error.message || AUTH_MSG.forgotFailed, "error");
     } finally {
       setForgotBusy(false);
     }
@@ -283,6 +303,7 @@ export default function Landing() {
     if (!resetToken || !resetPasswordValue) return;
     setResetBusy(true);
     setMessage("");
+    setMessageTone("");
     try {
       const response = await fetch(`${API}/api/auth/reset-password`, {
         method: "POST",
@@ -291,13 +312,13 @@ export default function Landing() {
         body: JSON.stringify({ token: resetToken, newPassword: resetPasswordValue }),
       });
       const data = await readJsonSafe(response);
-      if (!response.ok) throw new Error(data.error || "Reset password fallito");
+      if (!response.ok) throw new Error(data.error || AUTH_MSG.resetFailed);
       setResetToken("");
       setResetPasswordValue("");
-      setMessage("Password aggiornata. Ora puoi fare login.");
+      showMessage(AUTH_MSG.resetOk, "success");
       window.history.replaceState({}, document.title, "/");
     } catch (error) {
-      setMessage(error.message || "Reset password fallito");
+      showMessage(error.message || AUTH_MSG.resetFailed, "error");
     } finally {
       setResetBusy(false);
     }
@@ -539,41 +560,36 @@ export default function Landing() {
                       </Link>
                       .
                     </Typography>
-                    {pendingVerificationEmail && (
-                      <>
-                        <Typography variant="caption" color="text.secondary">
-                          Abbiamo inviato un codice a {pendingVerificationEmail}. Inseriscilo qui sotto.
-                        </Typography>
-                        <TextField
-                          label="Codice verifica email"
-                          value={verifyCode}
-                          onChange={(e) => setVerifyCode(e.target.value)}
-                          fullWidth
-                        />
-                        <Stack direction="row" spacing={1}>
-                          <Button variant="outlined" onClick={verifyEmailByCode} disabled={busy || !verifyCode}>
-                            Verifica codice
-                          </Button>
-                          <Button variant="text" onClick={resendVerification} disabled={busy}>
-                            Reinvia email
-                          </Button>
-                        </Stack>
-                      </>
-                    )}
+                  </>
+                )}
+                {pendingVerificationEmail && (
+                  <>
+                    <Typography variant="caption" color="text.secondary">
+                      Codice inviato a <strong>{pendingVerificationEmail}</strong>. Inserisci le 6 cifre ricevute per email
+                      (puoi usare anche il link nell&apos;email).
+                    </Typography>
+                    <TextField
+                      label="Codice a 6 cifre"
+                      value={verifyCode}
+                      onChange={(e) => setVerifyCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
+                      inputProps={{ inputMode: "numeric", pattern: "[0-9]*", maxLength: 6 }}
+                      fullWidth
+                    />
+                    <Stack direction="row" spacing={1}>
+                      <Button variant="outlined" onClick={verifyEmailByCode} disabled={busy || verifyCode.length < 6}>
+                        Verifica codice
+                      </Button>
+                      <Button variant="text" onClick={resendVerification} disabled={busy}>
+                        Reinvia email
+                      </Button>
+                    </Stack>
                   </>
                 )}
                 <Button type="submit" variant="contained" color="primary" size="large" disabled={busy}>
                   {busy ? t(lang, "wait") : isRegister ? t(lang, "createAccount") : t(lang, "signIn")}
                 </Button>
                 {message && (
-                  <Typography
-                    color={
-                      /(fallit|errore|non valido|non consentito|credenziali)/i.test(message)
-                        ? "error"
-                        : "success.main"
-                    }
-                    variant="body2"
-                  >
+                  <Typography color={authMessageColor(messageTone)} variant="body2">
                     {message}
                   </Typography>
                 )}

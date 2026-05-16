@@ -12,6 +12,7 @@ import MapDiscover from "./pages/MapDiscover.jsx";
 import TrailDetail from "./pages/TrailDetail.jsx";
 import Navigation from "./pages/Navigation.jsx";
 import Profile from "./pages/Profile.jsx";
+import Trails from "./pages/Trails.jsx";
 import AdminUsers from "./pages/AdminUsers.jsx";
 import LegalPrivacy from "./pages/LegalPrivacy.jsx";
 import LegalTerms from "./pages/LegalTerms.jsx";
@@ -27,6 +28,7 @@ ReactDOM.createRoot(document.getElementById("root")).render(
           <Route path="/" element={<App />}>
             <Route index element={<Landing />} />
             <Route path="app" element={<Home />} />
+            <Route path="app/trails" element={<Trails />} />
             <Route path="app/my-trails" element={<MyTrails />} />
             <Route path="app/map" element={<MapDiscover />} />
             <Route path="app/trails/:trailId" element={<TrailDetail />} />

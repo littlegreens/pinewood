@@ -96,12 +96,14 @@ async function issueEmailVerification(user) {
     subject: "Pinewood - Verifica la tua email",
     text:
       `Ciao ${user.name || ""},\n\n` +
-      `il tuo codice di verifica è: ${rawCode}\n` +
-      `oppure apri questo link: ${verifyLink}\n\n` +
+      `il tuo codice di verifica (6 cifre) è: ${rawCode}\n` +
+      `Inseriscilo nell'app Pinewood o sul sito ${env.clientUrl} nella schermata di login/registrazione.\n` +
+      `In alternativa apri questo link: ${verifyLink}\n\n` +
       "Il codice scade tra 15 minuti.",
     html:
       `<p>Ciao ${user.name || ""},</p>` +
-      `<p>Il tuo codice di verifica è <strong>${rawCode}</strong>.</p>` +
+      `<p>Il tuo codice di verifica è <strong>${rawCode}</strong> (6 cifre).</p>` +
+      `<p>Inseriscilo nell'app Pinewood o sul sito <a href="${env.clientUrl}">${env.clientUrl}</a> nella schermata di login o registrazione.</p>` +
       `<p>In alternativa puoi confermare cliccando qui: <a href="${verifyLink}">${verifyLink}</a></p>` +
       "<p>Il codice scade tra 15 minuti.</p>",
   });
@@ -217,7 +219,12 @@ router.post("/login", async (req, res) => {
     return res.status(401).json({ error: "Credenziali non valide" });
   }
   if (!user.email_verified_at) {
-    return res.status(403).json({ error: "Email non verificata" });
+    return res.status(403).json({
+      error:
+        "Questa email non è ancora verificata. Inserisci il codice a 6 cifre ricevuto per email.",
+      code: "EMAIL_NOT_VERIFIED",
+      needsVerification: true,
+    });
   }
   if (user.blocked_at) {
     return res.status(403).json({ error: "Account bloccato. Contatta l'assistenza Pinewood." });
@@ -236,7 +243,7 @@ router.post("/login", async (req, res) => {
   const accessToken = signAccessToken(safeUser);
   const refresh = await createRefreshToken(user.id);
   res.cookie(REFRESH_COOKIE, refresh.rawToken, cookieOptions);
-  return res.json({ accessToken, user: safeUser });
+  return res.json({ accessToken, refreshToken: refresh.rawToken, user: safeUser });
 });
 
 router.post("/google", (req, res) => {
@@ -370,7 +377,7 @@ router.post("/reset-password", async (req, res) => {
 });
 
 router.post("/refresh", async (req, res) => {
-  const token = req.cookies?.[REFRESH_COOKIE];
+  const token = req.cookies?.[REFRESH_COOKIE] || req.body?.refreshToken;
   if (!token) {
     return res.status(401).json({ error: "Refresh token mancante" });
   }
@@ -390,7 +397,7 @@ router.post("/refresh", async (req, res) => {
   }
   const accessToken = signAccessToken(user);
   res.cookie(REFRESH_COOKIE, rotated.rawToken, cookieOptions);
-  return res.json({ accessToken });
+  return res.json({ accessToken, refreshToken: rotated.rawToken });
 });
 
 router.delete("/logout", async (req, res) => {

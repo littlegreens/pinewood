@@ -1,0 +1,5 @@
+# Aggiungi DENTRO il blocco location /api/ { ... } accanto a proxy_pass (Hestia: nginx.ssl.conf_api_proxy)
+# per evitare 502 mentre Gemini risponde (default Nginx ~60s).
+    proxy_connect_timeout 15s;
+    proxy_send_timeout 240s;
+    proxy_read_timeout 240s;

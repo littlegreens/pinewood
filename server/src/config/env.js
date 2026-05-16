@@ -2,6 +2,22 @@ import dotenv from "dotenv";
 
 dotenv.config();
 
+const isProduction = process.env.NODE_ENV === "production";
+const OFFICIAL_SITE_URL = "https://pinewood.to";
+
+function resolveClientUrl() {
+  const explicit = String(process.env.CLIENT_URL || "").trim();
+  const fallback = isProduction ? OFFICIAL_SITE_URL : "http://localhost:5173";
+  let url = (explicit || fallback).replace(/\/$/, "");
+  if (isProduction && /localhost|127\.0\.0\.1/i.test(url)) {
+    console.warn(
+      `[env] CLIENT_URL="${url}" non valido in produzione; uso ${OFFICIAL_SITE_URL}`
+    );
+    url = OFFICIAL_SITE_URL;
+  }
+  return url;
+}
+
 const databaseUrl = process.env.DATABASE_URL || "";
 if (!databaseUrl) {
   throw new Error("DATABASE_URL mancante: configura la connessione Supabase.");
@@ -9,7 +25,7 @@ if (!databaseUrl) {
 
 export const env = {
   port: Number(process.env.PORT || 3001),
-  clientUrl: process.env.CLIENT_URL || "http://localhost:5173",
+  clientUrl: resolveClientUrl(),
   databaseUrl,
   redisUrl: process.env.REDIS_URL || "redis://redis:6379",
   jwtSecret: process.env.JWT_SECRET || "dev-jwt-secret-change-in-production",
@@ -26,8 +42,4 @@ export const env = {
    * "eudem25m,srtm30m" (EU-DEM prima, poi SRTM fuori EU / nodata). Non esiste "srtm1" sulla API pubblica.
    */
   opentopoDataset: process.env.OPENTOPO_DATASET || "eudem25m,srtm30m",
-  /** Opzionale: se assente, l'arricchimento descrizione (solo super_admin) viene saltato */
-  geminiApiKey: process.env.GEMINI_API_KEY || "",
-  geminiModel: process.env.GEMINI_MODEL || "gemini-2.0-flash",
-  trailAiDebug: String(process.env.TRAIL_AI_DEBUG || "false").toLowerCase() === "true",
 };

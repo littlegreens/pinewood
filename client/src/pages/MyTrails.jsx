@@ -5,13 +5,11 @@ import {
   Card,
   CardContent,
   Chip,
-  Container,
   Fab,
   InputAdornment,
   Menu,
   MenuItem,
   IconButton,
-  Alert,
   Dialog,
   DialogActions,
   DialogContent,
@@ -37,6 +35,9 @@ import SouthRoundedIcon from "@mui/icons-material/SouthRounded";
 import ReactQuill from "react-quill";
 import { detectLanguage, t } from "../services/i18n.js";
 import InternalHeader from "../components/InternalHeader.jsx";
+import AppBanner from "../components/AppBanner.jsx";
+import PageContainer from "../components/PageContainer.jsx";
+import { cardGridSx } from "../theme/layout.js";
 import AppDialogTitle from "../components/AppDialogTitle.jsx";
 import TrailEngagementStats from "../components/TrailEngagementStats.jsx";
 import { apiFetch } from "../services/api.js";
@@ -111,8 +112,6 @@ export default function MyTrails() {
   });
   const [editingParkingId, setEditingParkingId] = useState(null);
   const [uploadDialogOpen, setUploadDialogOpen] = useState(false);
-  const [aiGenerating, setAiGenerating] = useState(false);
-
   const [me, setMe] = useState(() => {
     return readStoredUser();
   });
@@ -134,14 +133,6 @@ export default function MyTrails() {
       window.removeEventListener("pinewood-auth-expired", onAuthExpired);
     };
   }, [lang]);
-
-  useEffect(() => {
-    if (!notice.text) return;
-    const timer = setTimeout(() => {
-      setNotice({ type: "", text: "" });
-    }, 3500);
-    return () => clearTimeout(timer);
-  }, [notice]);
 
   async function loadTrails() {
     try {
@@ -318,35 +309,6 @@ export default function MyTrails() {
     await loadTrails();
   }
 
-  async function generateDescriptionAiForEdit() {
-    if (!editData.id || me?.role !== "super_admin") return;
-    setAiGenerating(true);
-    try {
-      const res = await apiFetch(`/api/trails/${editData.id}/generate-description-ai`, {
-        method: "POST",
-      });
-      const payload = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        setNotice({ type: "error", text: payload?.error || t(lang, "genericError") });
-        return;
-      }
-      const reload = await apiFetch(`/api/trails/${editData.id}`);
-      if (reload.ok) {
-        const trail = await reload.json();
-        setEditData((prev) => ({
-          ...prev,
-          description: trail.description || "",
-          source_website_url: trail.source_website_url || prev.source_website_url,
-        }));
-      }
-      if (!payload?.ok) {
-        setNotice({ type: "error", text: `AI: ${payload?.reason || "generazione non applicata"}` });
-      }
-    } finally {
-      setAiGenerating(false);
-    }
-  }
-
   function startEditParking(parking) {
     setEditingParkingId(parking.id);
     setParkingData({
@@ -442,16 +404,15 @@ export default function MyTrails() {
   return (
     <Box sx={{ minHeight: "100vh", bgcolor: "background.default" }}>
       <InternalHeader />
+      <AppBanner
+        message={notice.text}
+        type={notice.type === "success" ? "success" : "error"}
+        onDismiss={() => setNotice({ type: "", text: "" })}
+      />
 
-      <Container maxWidth="sm" sx={{ py: 2.5, pb: 10 }}>
-        <Stack spacing={2}>
-          {notice.text && (
-            <Alert severity={notice.type === "success" ? "success" : "error"}>{notice.text}</Alert>
-          )}
+      <PageContainer sx={{ py: { xs: 2.5, md: 3 }, pb: { xs: 10, md: 6 } }}>
+        <Stack spacing={{ xs: 2, md: 2.5 }}>
 
-          <Typography variant="h5" sx={{ fontWeight: 700 }}>
-            {t(lang, "myTrails")}
-          </Typography>
           <Typography variant="caption" color="text.secondary">
             {t(lang, mode === "saved" ? "trailsSavedCount" : "trailsLoadedCount")}: {filtered.length}
           </Typography>
@@ -488,7 +449,7 @@ export default function MyTrails() {
             <Typography color="text.secondary">{t(lang, "noTrailsYet")}</Typography>
           )}
 
-          <Stack spacing={1.4}>
+          <Box sx={cardGridSx}>
             {filtered.map((trail) => {
               const isMine = trail.owner_id === me?.id || trail.is_mine;
               const ownerLabel =
@@ -503,7 +464,7 @@ export default function MyTrails() {
                 <Card
                   key={trail.id}
                   variant="outlined"
-                  sx={{ overflow: "hidden", cursor: "pointer" }}
+                  sx={{ overflow: "hidden", cursor: "pointer", height: "100%", display: "flex", flexDirection: "column" }}
                   onClick={() =>
                     navigate(`/app/trails/${trail.id}`, { state: { backTo: "/app/my-trails" } })
                   }
@@ -593,9 +554,9 @@ export default function MyTrails() {
                 </Card>
               );
             })}
-          </Stack>
+          </Box>
         </Stack>
-      </Container>
+      </PageContainer>
 
       {mode === "mine" && (
         <Fab
@@ -732,18 +693,6 @@ export default function MyTrails() {
                   modules={QUILL_MODULES}
                   formats={QUILL_FORMATS}
                 />
-                {me?.role === "super_admin" && (
-                  <Box sx={{ mt: 1 }}>
-                    <Button
-                      size="small"
-                      variant="outlined"
-                      onClick={generateDescriptionAiForEdit}
-                      disabled={aiGenerating}
-                    >
-                      {aiGenerating ? t(lang, "wait") : t(lang, "generateAiDescription")}
-                    </Button>
-                  </Box>
-                )}
               </Box>
               <TextField
                 label={t(lang, "officialWebsite")}

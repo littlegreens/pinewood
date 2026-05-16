@@ -231,3 +231,10 @@ h2 {
   padding-left: 0 !important;
   padding-right: 0 !important;
 }
+
+/* Desktop PWA: tipografia leggermente più grande */
+@media (min-width: 900px) {
+  html {
+    font-size: 17px;
+  }
+}

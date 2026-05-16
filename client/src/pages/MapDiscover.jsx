@@ -1,14 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Alert, Box, Button, IconButton, InputAdornment, Paper, Stack, TextField, Typography } from "@mui/material";
+import { Box, Button, Chip, IconButton, InputAdornment, Paper, Stack, TextField, Typography } from "@mui/material";
 import MyLocationRoundedIcon from "@mui/icons-material/MyLocationRounded";
 import CloseRoundedIcon from "@mui/icons-material/CloseRounded";
 import SearchIcon from "@mui/icons-material/Search";
+import PlaceIcon from "@mui/icons-material/Place";
 import NorthRoundedIcon from "@mui/icons-material/NorthRounded";
 import SouthRoundedIcon from "@mui/icons-material/SouthRounded";
 import L from "leaflet";
 import { MapContainer, Polyline, TileLayer, useMap } from "react-leaflet";
 import { useNavigate } from "react-router-dom";
 import InternalHeader from "../components/InternalHeader.jsx";
+import AppBanner from "../components/AppBanner.jsx";
+import { pageContainerSx } from "../theme/layout.js";
 import { apiFetch } from "../services/api.js";
 import "leaflet.markercluster";
 import "leaflet.markercluster/dist/MarkerCluster.css";
@@ -112,11 +115,44 @@ function LocateControl({ onLocate }) {
   return null;
 }
 
+const GEO_RADIUS_KM = 100;
+
+function distanceMeters(a, b) {
+  const toRad = (v) => (v * Math.PI) / 180;
+  const R = 6371000;
+  const dLat = toRad(b[0] - a[0]);
+  const dLon = toRad(b[1] - a[1]);
+  const lat1 = toRad(a[0]);
+  const lat2 = toRad(b[0]);
+  const x =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  return 2 * R * Math.atan2(Math.sqrt(x), Math.sqrt(1 - x));
+}
+
+async function geocode(text) {
+  const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(text)}&format=json&limit=1`;
+  try {
+    const res = await fetch(url, {
+      headers: { "Accept-Language": "it", "User-Agent": "Pinewood/1.0" },
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (!data.length) return null;
+    return { lat: Number(data[0].lat), lon: Number(data[0].lon), name: data[0].display_name.split(",")[0] };
+  } catch {
+    return null;
+  }
+}
+
 export default function MapDiscover() {
   const navigate = useNavigate();
   const [query, setQuery] = useState("");
   const [items, setItems] = useState([]);
   const [notice, setNotice] = useState("");
+  const [geoResult, setGeoResult] = useState(null);
+  const debounceRef = useRef(null);
+  const geoAbort = useRef(false);
   const locateAction = useMemo(() => ({ current: null }), []);
 
   useEffect(() => {
@@ -301,11 +337,48 @@ export default function MapDiscover() {
     return `${Math.round(Number(value))} m`;
   }
 
+  useEffect(() => {
+    setGeoResult(null);
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    geoAbort.current = true;
+
+    const trimmed = query.trim();
+    if (trimmed.length < 3) return;
+
+    const nameMatches = items.filter((p) =>
+      String(p.name || "").toLowerCase().includes(trimmed.toLowerCase())
+    );
+    if (nameMatches.length >= 3) return;
+
+    let cancelled = false;
+    geoAbort.current = false;
+
+    debounceRef.current = setTimeout(async () => {
+      if (cancelled || geoAbort.current) return;
+      const result = await geocode(trimmed);
+      if (cancelled || geoAbort.current) return;
+      if (result) setGeoResult(result);
+    }, 600);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [query, items]);
+
   const filteredPoints = useMemo(() => {
     const q = query.trim().toLowerCase();
+
+    if (geoResult) {
+      const geoPos = [geoResult.lat, geoResult.lon];
+      return items.filter((p) => {
+        const d = distanceMeters(geoPos, [p.lat, p.lon]);
+        return d <= GEO_RADIUS_KM * 1000;
+      });
+    }
+
     if (!q) return items;
     return items.filter((p) => String(p.name || "").toLowerCase().includes(q));
-  }, [items, query]);
+  }, [items, query, geoResult]);
 
   useEffect(() => {
     if (!selectedTrail || !cardRef.current) return;
@@ -320,6 +393,12 @@ export default function MapDiscover() {
   return (
     <Box sx={{ height: "100dvh", display: "flex", flexDirection: "column", bgcolor: "background.default" }}>
       <InternalHeader />
+      <AppBanner
+        message={notice}
+        type="error"
+        onDismiss={() => setNotice("")}
+        top="max(72px, calc(env(safe-area-inset-top) + 56px))"
+      />
       <Box sx={{ position: "relative", flex: 1, minHeight: 0 }}>
         <MapContainer center={INITIAL_CENTER} zoom={INITIAL_ZOOM} style={{ width: "100%", height: "100%" }} zoomControl={false}>
           <TileLayer
@@ -344,19 +423,23 @@ export default function MapDiscover() {
           sx={{
             position: "absolute",
             top: 10,
-            left: 10,
-            right: 10,
+            left: 0,
+            right: 0,
             zIndex: MAP_OVERLAY_ZINDEX,
             pointerEvents: "none",
+            display: "flex",
+            justifyContent: "center",
+            px: 2,
           }}
         >
+          <Box sx={{ ...pageContainerSx, width: "100%", pointerEvents: "none" }}>
           <Box sx={{ display: "flex", alignItems: "center", gap: 0.8, pointerEvents: "auto" }}>
             <TextField
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               onFocus={closeSelections}
               onClick={closeSelections}
-              placeholder="Cerca percorso"
+              placeholder="Cerca per nome o luogo..."
               fullWidth
               size="small"
               sx={{
@@ -390,11 +473,22 @@ export default function MapDiscover() {
               <MyLocationRoundedIcon />
             </IconButton>
           </Box>
-          {notice && (
-            <Alert severity="error" sx={{ mt: 0.8, pointerEvents: "auto" }}>
-              {notice}
-            </Alert>
+          {geoResult && (
+            <Box sx={{ display: "flex", justifyContent: "flex-end", mt: 0.8, pointerEvents: "auto" }}>
+              <Chip
+                icon={<PlaceIcon sx={{ fontSize: 16 }} />}
+                label={`Entro ${GEO_RADIUS_KM} km da ${geoResult.name}`}
+                size="small"
+                onDelete={() => { setGeoResult(null); setQuery(""); }}
+                sx={{
+                  bgcolor: "#ffffffef",
+                  fontWeight: 600,
+                  "& .MuiChip-icon": { color: "#2d4f1e" },
+                }}
+              />
+            </Box>
           )}
+          </Box>
         </Box>
         {selectedTrail && (
           <Box
