@@ -19,6 +19,7 @@ import {
 } from "@mui/material";
 import HikingIcon from "@mui/icons-material/Hiking";
 import ExploreIcon from "@mui/icons-material/Explore";
+import KeyboardArrowDownRoundedIcon from "@mui/icons-material/KeyboardArrowDownRounded";
 import { useDrag } from "@use-gesture/react";
 
 import { useNavigate } from "react-router-dom";
@@ -28,6 +29,7 @@ import InternalHeader from "../components/InternalHeader.jsx";
 import AppBanner from "../components/AppBanner.jsx";
 import PageContainer from "../components/PageContainer.jsx";
 import { pageContainerSx } from "../theme/layout.js";
+import { safeBottomCss } from "../theme/safeArea.js";
 import { apiFetch } from "../services/api.js";
 import { setStoredUserProfile } from "../services/api.js";
 
@@ -313,13 +315,23 @@ export default function Home() {
   const sectionSx = {
     height: containerH || "100%",
     width: "100%",
-          display: "flex",
-          flexDirection: "column",
+    display: "flex",
+    flexDirection: "column",
     justifyContent: "center",
     alignItems: "center",
     position: "relative",
     overflow: "hidden",
     flexShrink: 0,
+  };
+
+  const scrollHintSx = {
+    position: "absolute",
+    bottom: safeBottomCss(20),
+    left: "50%",
+    transform: "translateX(-50%)",
+    zIndex: 2,
+    color: "rgba(255,255,255,0.6)",
+    pointerEvents: "none",
   };
 
   const fieldSx = {
@@ -373,6 +385,7 @@ export default function Home() {
                 Pinewood ti accompagna dove serve davvero: fuori, passo dopo passo, con testa leggera e sguardo aperto. Keep the way. Sempre.
               </Typography>
             </Box>
+            <KeyboardArrowDownRoundedIcon sx={scrollHintSx} fontSize="large" />
       </Box>
 
           {/* 2. CHI SIAMO */}
@@ -391,6 +404,7 @@ export default function Home() {
           </Typography>
               </Stack>
             </PageContainer>
+            <KeyboardArrowDownRoundedIcon sx={scrollHintSx} fontSize="large" />
           </Box>
 
           {/* 3. CTA TRAILS / MAPPA */}
@@ -415,6 +429,7 @@ export default function Home() {
                 </Button>
               </Stack>
             </Box>
+            <KeyboardArrowDownRoundedIcon sx={scrollHintSx} fontSize="large" />
           </Box>
 
           {/* 4. ISCRIVITI / LOGIN */}
@@ -445,6 +460,7 @@ export default function Home() {
                   </Stack>
                 </Stack>
               </PageContainer>
+              <KeyboardArrowDownRoundedIcon sx={scrollHintSx} fontSize="large" />
             </Box>
           )}
 
@@ -481,7 +497,13 @@ export default function Home() {
         open={showLogin}
         onClose={() => setShowLogin(false)}
         PaperProps={{
-          sx: { pb: "max(12px, env(safe-area-inset-bottom))", borderTopLeftRadius: 12, borderTopRightRadius: 12 },
+          sx: {
+            pb: safeBottomCss(12),
+            borderTopLeftRadius: 12,
+            borderTopRightRadius: 12,
+            maxHeight: "min(88dvh, 720px)",
+            overflowY: "auto",
+          },
         }}
       >
         <Box sx={{ p: 2.2, bgcolor: "white" }}>

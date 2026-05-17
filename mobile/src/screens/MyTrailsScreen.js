@@ -13,6 +13,7 @@ import {
   Platform,
 } from "react-native";
 import { useNavigation } from "@react-navigation/native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { SvgXml } from "react-native-svg";
 import * as DocumentPicker from "expo-document-picker";
 import Header from "../components/Header";
@@ -31,6 +32,7 @@ import { apiFetch } from "../services/api";
 import { detectLanguage, t } from "../services/i18n";
 import { formatMinutesToHours } from "../utils/geo";
 import { colors, fonts, spacing, borderRadius } from "../theme";
+import { safeBottom } from "../theme/safeArea";
 
 const TABS = ["mine", "saved"];
 const POLL_INTERVAL_MS = 10000;
@@ -74,7 +76,9 @@ const chipStyles = StyleSheet.create({
 
 export default function MyTrailsScreen() {
   const navigation = useNavigation();
+  const insets = useSafeAreaInsets();
   const lang = useMemo(() => detectLanguage(), []);
+  const bottomPad = safeBottom(insets, 16);
 
   const [activeTab, setActiveTab] = useState("mine");
   const [items, setItems] = useState([]);
@@ -314,7 +318,7 @@ export default function MyTrailsScreen() {
         data={displayItems}
         keyExtractor={(item) => String(item.id)}
         renderItem={renderCard}
-        contentContainerStyle={styles.listContent}
+        contentContainerStyle={[styles.listContent, { paddingBottom: bottomPad + 72 }]}
         ItemSeparatorComponent={() => <View style={{ height: spacing(1) }} />}
         ListEmptyComponent={
           loading ? (
@@ -328,7 +332,7 @@ export default function MyTrailsScreen() {
       {/* FAB + */}
       {activeTab === "mine" && (
         <TouchableOpacity
-          style={[styles.fab, uploading && styles.fabDisabled]}
+          style={[styles.fab, { bottom: bottomPad + 16 }, uploading && styles.fabDisabled]}
           onPress={() => setUploadModal(true)}
           disabled={uploading}
           activeOpacity={0.85}
@@ -348,7 +352,7 @@ export default function MyTrailsScreen() {
         onRequestClose={() => setUploadModal(false)}
       >
         <Pressable style={styles.modalBackdrop} onPress={() => setUploadModal(false)}>
-          <Pressable style={styles.modalSheet} onPress={() => {}}>
+          <Pressable style={[styles.modalSheet, { paddingBottom: bottomPad + 20 }]} onPress={() => {}}>
             <View style={styles.modalHandle} />
             <CloudUploadIcon size={40} color={colors.pineGreen} />
             <Text style={styles.modalTitle}>{t(lang, "uploadInfoTitle")}</Text>
@@ -371,7 +375,11 @@ export default function MyTrailsScreen() {
           <Animated.View
             style={[
               styles.menuSheet,
-              { opacity: menuAnim, transform: [{ scale: menuAnim.interpolate({ inputRange: [0, 1], outputRange: [0.95, 1] }) }] },
+              {
+                paddingBottom: bottomPad + 16,
+                opacity: menuAnim,
+                transform: [{ scale: menuAnim.interpolate({ inputRange: [0, 1], outputRange: [0.95, 1] }) }],
+              },
             ]}
           >
             <Text style={styles.menuTrailName} numberOfLines={1}>{menuTrail.name}</Text>
@@ -496,7 +504,6 @@ const styles = StyleSheet.create({
   fab: {
     position: "absolute",
     right: 18,
-    bottom: 72,
     width: 56,
     height: 56,
     borderRadius: 28,
@@ -521,7 +528,6 @@ const styles = StyleSheet.create({
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
     paddingHorizontal: spacing(3),
-    paddingBottom: 40,
     paddingTop: 16,
     alignItems: "center",
     gap: 12,
@@ -564,7 +570,6 @@ const styles = StyleSheet.create({
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
     paddingHorizontal: spacing(2),
-    paddingBottom: 36,
     paddingTop: 16,
   },
   menuTrailName: {

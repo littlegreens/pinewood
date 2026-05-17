@@ -94,10 +94,12 @@ export default function MapDiscoverScreen() {
 
   useEffect(() => subscribePosition((snap) => setUserPos(toCoords(snap))), []);
 
+  const initialFitDone = useRef(false);
   useEffect(() => {
-    if (!mapReady || !items.length || selectedTrail) return;
+    if (!mapReady || !items.length || initialFitDone.current) return;
+    initialFitDone.current = true;
     mapRef.current?.fitPoints(items.map((p) => [p.lat, p.lon]));
-  }, [mapReady, items, selectedTrail]);
+  }, [mapReady, items]);
 
   useEffect(() => {
     setGeoResult(null);

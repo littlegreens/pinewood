@@ -10,7 +10,7 @@
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",
-      "backgroundColor": "#2D4F1E"
+      "backgroundColor": "#1a1a1a"
     },
     "ios": {
       "supportsTablet": false,
@@ -20,7 +20,10 @@
         "LSSupportsOpeningDocumentsInPlace": true,
         "NSLocationWhenInUseUsageDescription": "Pinewood usa la tua posizione per mostrarti i sentieri vicini e per la navigazione GPS.",
         "NSLocationAlwaysAndWhenInUseUsageDescription": "Pinewood usa la posizione in background per la navigazione GPS sul sentiero.",
-        "UIBackgroundModes": ["location", "audio"]
+        "UIBackgroundModes": [
+          "location",
+          "audio"
+        ]
       },
       "config": {
         "usesNonExemptEncryption": false
@@ -29,8 +32,9 @@
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#2D4F1E"
+        "backgroundColor": "#1a1a1a"
       },
+      "softwareKeyboardLayoutMode": "resize",
       "package": "to.pinewood.app",
       "permissions": [
         "ACCESS_FINE_LOCATION",
@@ -39,7 +43,12 @@
         "FOREGROUND_SERVICE",
         "FOREGROUND_SERVICE_LOCATION",
         "VIBRATE",
-        "WAKE_LOCK"
+        "WAKE_LOCK",
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.ACCESS_BACKGROUND_LOCATION",
+        "android.permission.FOREGROUND_SERVICE",
+        "android.permission.FOREGROUND_SERVICE_LOCATION"
       ],
       "config": {}
     },
@@ -66,6 +75,11 @@
           "isAndroidForegroundServiceEnabled": true
         }
       ]
-    ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "80535674-4de0-4397-a2b2-b8c8e698b4cc"
+      }
+    }
   }
 }

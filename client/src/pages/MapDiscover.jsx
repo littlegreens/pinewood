@@ -199,6 +199,8 @@ export default function MapDiscover() {
   const [cardHeight, setCardHeight] = useState(0);
   const pathLoadTimeoutRef = useRef(null);
   const revealSeqRef = useRef(0);
+  const mapViewBeforeRef = useRef(null);
+  const mapInstanceRef = useRef(null);
 
   function toLatLngPath(geojson) {
     if (!geojson || !geojson.type) return null;
@@ -226,6 +228,13 @@ export default function MapDiscover() {
       clearTimeout(pathLoadTimeoutRef.current);
       pathLoadTimeoutRef.current = null;
     }
+    const map = mapInstanceRef.current;
+    const saved = mapViewBeforeRef.current;
+    if (map && saved) {
+      map.stop();
+      map.setView([saved.lat, saved.lng], saved.zoom, { animate: true, duration: 0.35 });
+      mapViewBeforeRef.current = null;
+    }
     setTrailPathLoading(false);
     setTrailPathTimedOut(false);
     setSelectedTrail(null);
@@ -235,6 +244,11 @@ export default function MapDiscover() {
   const revealTrailOnMap = useCallback(async (trail, mapInstance) => {
     if (selectedTrail?.id === trail.id && selectedTrailPath?.length) {
       return;
+    }
+    if (mapInstance && !mapViewBeforeRef.current) {
+      const c = mapInstance.getCenter();
+      mapViewBeforeRef.current = { lat: c.lat, lng: c.lng, zoom: mapInstance.getZoom() };
+      mapInstanceRef.current = mapInstance;
     }
     function focusMarkerFallback() {
       if (!mapInstance) return;

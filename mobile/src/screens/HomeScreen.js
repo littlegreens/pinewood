@@ -24,8 +24,17 @@ import {
   KeyboardArrowDownIcon,
 } from "../components/SvgIcons";
 import { colors, fonts, borderRadius } from "../theme";
+import { safeBottom } from "../theme/safeArea";
 import { apiFetch, getStoredAccessToken } from "../services/api";
 import { detectLanguage, t } from "../services/i18n";
+
+function ScrollHint({ bottom }) {
+  return (
+    <View style={[styles.scrollHint, { bottom }]}>
+      <KeyboardArrowDownIcon size={28} color="rgba(255,255,255,0.6)" />
+    </View>
+  );
+}
 
 const BASE = "https://pinewood.to";
 
@@ -91,7 +100,8 @@ export default function HomeScreen() {
   }
 
   const headerH = insets.top + 6 + 50 + 1;
-  const pageH = winH - headerH;
+  const pageH = winH - headerH - insets.bottom;
+  const scrollHintBottom = 20;
 
   return (
     <View style={styles.root}>
@@ -119,9 +129,7 @@ export default function HomeScreen() {
                 passo, con testa leggera e sguardo aperto. Keep the way. Sempre.
               </Text>
             </View>
-            <View style={styles.scrollHint}>
-              <KeyboardArrowDownIcon size={28} color="rgba(255,255,255,0.6)" />
-            </View>
+            <ScrollHint bottom={scrollHintBottom} />
           </ImageBackground>
         </View>
 
@@ -144,6 +152,7 @@ export default function HomeScreen() {
                 cammina, per chi cammina. Keep the way.
               </Text>
             </View>
+            <ScrollHint bottom={scrollHintBottom} />
           </ImageBackground>
         </View>
 
@@ -177,6 +186,7 @@ export default function HomeScreen() {
                 </TouchableOpacity>
               </View>
             </View>
+            <ScrollHint bottom={scrollHintBottom} />
           </ImageBackground>
         </View>
 
@@ -212,6 +222,7 @@ export default function HomeScreen() {
                   </TouchableOpacity>
                 </View>
               </View>
+              <ScrollHint bottom={scrollHintBottom} />
             </ImageBackground>
           </View>
         )}
@@ -222,8 +233,8 @@ export default function HomeScreen() {
             <View style={[styles.overlay, { backgroundColor: "rgba(10,18,12,0.6)" }]} />
             <KeyboardAvoidingView
               style={styles.centered}
-              behavior={Platform.OS === "ios" ? "padding" : undefined}
-              keyboardVerticalOffset={headerH + 20}
+              behavior={Platform.OS === "ios" ? "padding" : "height"}
+              keyboardVerticalOffset={headerH + 12}
             >
               <ScrollView
                 style={{ width: "100%" }}

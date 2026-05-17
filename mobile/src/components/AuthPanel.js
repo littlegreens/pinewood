@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useRef, useState } from "react";
 import {
   View,
   Text,
@@ -16,6 +16,7 @@ import Svg, { Path } from "react-native-svg";
 import { setStoredAccessToken, setStoredRefreshToken, setStoredUserProfile } from "../services/api";
 import { AUTH_MSG, isEmailNotVerifiedResponse } from "../services/authMessages";
 import { colors, fonts, borderRadius } from "../theme";
+import { safeBottom } from "../theme/safeArea";
 
 const API_BASE = "https://pinewood.to";
 
@@ -79,6 +80,14 @@ const LEGAL = {
 
 export default function AuthPanel({ visible, onClose, onSuccess, initialTab = "login" }) {
   const insets = useSafeAreaInsets();
+  const scrollRef = useRef(null);
+  const sheetBottom = safeBottom(insets, 16);
+
+  function scrollFieldIntoView() {
+    requestAnimationFrame(() => {
+      scrollRef.current?.scrollToEnd({ animated: true });
+    });
+  }
   const [tab, setTab] = useState(initialTab);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -317,7 +326,8 @@ export default function AuthPanel({ visible, onClose, onSuccess, initialTab = "l
     <Modal visible={visible} animationType="slide" transparent>
       <KeyboardAvoidingView
         style={styles.overlay}
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
+        keyboardVerticalOffset={Platform.OS === "ios" ? 8 : 0}
       >
         <TouchableOpacity
           style={styles.topDismiss}
@@ -325,12 +335,16 @@ export default function AuthPanel({ visible, onClose, onSuccess, initialTab = "l
           onPress={handleClose}
         />
 
-        <View style={[styles.sheet, { paddingBottom: insets.bottom + 16 }]}>
+        <View style={[styles.sheet, { paddingBottom: sheetBottom }]}>
           <View style={styles.handle} />
           <ScrollView
+            ref={scrollRef}
             keyboardShouldPersistTaps="handled"
+            keyboardDismissMode="on-drag"
+            automaticallyAdjustKeyboardInsets
             bounces={false}
             showsVerticalScrollIndicator={false}
+            contentContainerStyle={styles.sheetScroll}
           >
             {forgotMode ? (
               <>
@@ -344,6 +358,7 @@ export default function AuthPanel({ visible, onClose, onSuccess, initialTab = "l
                   placeholderTextColor="#999"
                   value={forgotEmail}
                   onChangeText={setForgotEmail}
+                  onFocus={scrollFieldIntoView}
                   keyboardType="email-address"
                   autoCapitalize="none"
                 />
@@ -387,6 +402,7 @@ export default function AuthPanel({ visible, onClose, onSuccess, initialTab = "l
                     placeholderTextColor="#999"
                     value={name}
                     onChangeText={setName}
+                    onFocus={scrollFieldIntoView}
                     autoCapitalize="words"
                   />
                 )}
@@ -397,6 +413,7 @@ export default function AuthPanel({ visible, onClose, onSuccess, initialTab = "l
                   placeholderTextColor="#999"
                   value={email}
                   onChangeText={setEmail}
+                  onFocus={scrollFieldIntoView}
                   keyboardType="email-address"
                   autoCapitalize="none"
                 />
@@ -408,6 +425,7 @@ export default function AuthPanel({ visible, onClose, onSuccess, initialTab = "l
                     placeholderTextColor="#999"
                     value={password}
                     onChangeText={setPassword}
+                    onFocus={scrollFieldIntoView}
                     secureTextEntry={!showPw}
                   />
                   <TouchableOpacity onPress={() => setShowPw((v) => !v)} style={styles.eyeBtn}>
@@ -468,6 +486,7 @@ export default function AuthPanel({ visible, onClose, onSuccess, initialTab = "l
                       placeholderTextColor="#999"
                       value={verifyCode}
                       onChangeText={(v) => setVerifyCode(v.replace(/\D/g, "").slice(0, 6))}
+                      onFocus={scrollFieldIntoView}
                       keyboardType="number-pad"
                       maxLength={6}
                     />
@@ -660,13 +679,16 @@ const styles = StyleSheet.create({
   topDismiss: {
     flex: 1,
   },
+  sheetScroll: {
+    paddingBottom: 8,
+  },
   sheet: {
     backgroundColor: colors.white,
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
     paddingHorizontal: 24,
     paddingTop: 10,
-    maxHeight: "75%",
+    maxHeight: "82%",
     shadowColor: "#000",
     shadowOffset: { width: 0, height: -4 },
     shadowOpacity: 0.15,

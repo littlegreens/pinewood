@@ -1,0 +1,20 @@
+# EAS Build: escludi dal tarball tutto tranne mobile (monorepo Pinewood)
+# Vedi https://docs.expo.dev/build-reference/easignore/
+
+/client/
+/server/
+/deploy/
+/.prod-snapshot/
+/node_modules/
+
+# Asset pesanti / non necessari per l'APK
+*.ai
+*.pdf
+adesivo*
+logo_t-shirt*
+template_*
+server/node_modules.zip
+server/node_modules/
+
+# Mobile: dipendenze locali (reinstallate in cloud)
+mobile/node_modules/

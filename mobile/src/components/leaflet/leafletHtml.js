@@ -1,4 +1,4 @@
-/** HTML Leaflet ù stesso stack PWA (OSM + MarkerCluster + explore.svg) */
+/** HTML Leaflet ? stesso stack PWA (OSM + MarkerCluster + explore.svg) */
 export const LEAFLET_HTML = `<!DOCTYPE html>
 <html>
 <head>
@@ -29,6 +29,7 @@ export const LEAFLET_HTML = `<!DOCTYPE html>
   var mode = "discover";
   var interactive = true;
   var courseUpEnabled = false;
+  var savedDiscoverView = null;
 
   function post(msg) {
     if (window.ReactNativeWebView) {
@@ -88,8 +89,21 @@ export const LEAFLET_HTML = `<!DOCTYPE html>
     }
   }
 
-  function clearPath() {
+  function clearPathLayer() {
     if (pathLayer) { map.removeLayer(pathLayer); pathLayer = null; }
+  }
+
+  function clearPath() {
+    clearPathLayer();
+    if (savedDiscoverView && mode === "discover") {
+      map.stop();
+      map.setView(
+        [savedDiscoverView.lat, savedDiscoverView.lng],
+        savedDiscoverView.zoom,
+        { animate: true, duration: 0.35 }
+      );
+      savedDiscoverView = null;
+    }
   }
 
   function clearTrailLayers() {
@@ -257,10 +271,16 @@ export const LEAFLET_HTML = `<!DOCTYPE html>
         if (mode === "discover") setDiscoverPoints(msg.points || []);
         break;
       case "setPath":
-        clearPath();
         if (msg.path && msg.path.length >= 2) {
+          if (msg.fit && mode === "discover" && !savedDiscoverView) {
+            var c0 = map.getCenter();
+            savedDiscoverView = { lat: c0.lat, lng: c0.lng, zoom: map.getZoom() };
+          }
+          clearPathLayer();
           drawPath(msg.path, msg.color, msg.weight);
           if (msg.fit) fitLatLngs(msg.path, msg.bottomPad);
+        } else {
+          clearPath();
         }
         break;
       case "clearPath":
