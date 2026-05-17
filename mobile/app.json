@@ -10,7 +10,7 @@
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",
-      "backgroundColor": "#1a1a1a"
+      "backgroundColor": "#2D4F1E"
     },
     "ios": {
       "supportsTablet": false,
@@ -35,6 +35,10 @@
         "backgroundColor": "#1a1a1a"
       },
       "softwareKeyboardLayoutMode": "resize",
+      "navigationBar": {
+        "backgroundColor": "#00000000",
+        "barStyle": "dark-content"
+      },
       "package": "to.pinewood.app",
       "permissions": [
         "ACCESS_FINE_LOCATION",

@@ -40,7 +40,7 @@ import TrailEngagementStats from "../components/TrailEngagementStats.jsx";
 import AppDialogTitle from "../components/AppDialogTitle.jsx";
 import AppBanner from "../components/AppBanner.jsx";
 import PageContainer from "../components/PageContainer.jsx";
-import { hideOnDesktopSx, showOnDesktopSx } from "../theme/layout.js";
+import { hideOnDesktopSx } from "../theme/layout.js";
 import { detectLanguage, t } from "../services/i18n.js";
 import { apiFetch } from "../services/api.js";
 import { getLastKnownLocation, requestQuickLocation } from "../services/locationTracker.js";
@@ -890,25 +890,6 @@ export default function TrailDetail() {
                 >
                   <BookmarkPinewoodIcon filled={Boolean(trail.is_saved)} sx={{ fontSize: 22 }} />
                 </IconButton>
-              )}
-              {!isGuest && (
-                <Button
-                  variant="contained"
-                  startIcon={<PlayArrowRoundedIcon />}
-                  onClick={startNavigation}
-                  disabled={playStarting}
-                  sx={{
-                    ...showOnDesktopSx,
-                    borderRadius: 99,
-                    px: 2.5,
-                    py: 0.85,
-                    ml: 0.5,
-                    fontWeight: 700,
-                    boxShadow: "none",
-                  }}
-                >
-                  {t(lang, "startHike")}
-                </Button>
               )}
             </Box>
           </Box>

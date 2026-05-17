@@ -19,6 +19,8 @@ import "leaflet.markercluster/dist/MarkerCluster.Default.css";
 
 const INITIAL_CENTER = [42.7, 12.6];
 const INITIAL_ZOOM = 10;
+const DISCOVER_FLY_IN = 0.5;
+const DISCOVER_FLY_OUT = 0.45;
 const MAP_OVERLAY_ZINDEX = 1200;
 const API = import.meta.env.VITE_API_URL || "";
 
@@ -36,7 +38,7 @@ function FitAllPoints({ points }) {
   return null;
 }
 
-function ClusterLayer({ points, onRevealTrail, onClusterClickStart }) {
+function ClusterLayer({ points, onRevealTrail, onClusterClickStart, clusterGroupRef }) {
   const map = useMap();
   const clusterLayerRef = useRef(null);
   const onRevealTrailRef = useRef(onRevealTrail);
@@ -52,6 +54,8 @@ function ClusterLayer({ points, onRevealTrail, onClusterClickStart }) {
       zoomToBoundsOnClick: true,
       removeOutsideVisibleBounds: true,
       maxClusterRadius: 52,
+      animate: false,
+      animateAddingMarkers: false,
       iconCreateFunction(cluster) {
         return L.divIcon({
           className: "pinewood-cluster-icon",
@@ -65,13 +69,15 @@ function ClusterLayer({ points, onRevealTrail, onClusterClickStart }) {
       onClusterClickStart?.();
     });
     clusterLayerRef.current = group;
+    if (clusterGroupRef) clusterGroupRef.current = group;
     map.addLayer(group);
     return () => {
       group.off("clusterclick");
       map.removeLayer(group);
       clusterLayerRef.current = null;
+      if (clusterGroupRef) clusterGroupRef.current = null;
     };
-  }, [map]);
+  }, [map, clusterGroupRef]);
 
   useEffect(() => {
     const group = clusterLayerRef.current;
@@ -106,7 +112,8 @@ function LocateControl({ onLocate }) {
         (pos) => {
           const lat = pos.coords.latitude;
           const lon = pos.coords.longitude;
-          map.setView([lat, lon], 13, { animate: true });
+          map.stop();
+          map.flyTo([lat, lon], 13, { duration: DISCOVER_FLY_IN });
         },
         () => {}
       );
@@ -201,6 +208,7 @@ export default function MapDiscover() {
   const revealSeqRef = useRef(0);
   const mapViewBeforeRef = useRef(null);
   const mapInstanceRef = useRef(null);
+  const clusterGroupRef = useRef(null);
 
   function toLatLngPath(geojson) {
     if (!geojson || !geojson.type) return null;
@@ -230,15 +238,19 @@ export default function MapDiscover() {
     }
     const map = mapInstanceRef.current;
     const saved = mapViewBeforeRef.current;
-    if (map && saved) {
-      map.stop();
-      map.setView([saved.lat, saved.lng], saved.zoom, { animate: true, duration: 0.35 });
-      mapViewBeforeRef.current = null;
-    }
+    setSelectedTrailPath(null);
     setTrailPathLoading(false);
     setTrailPathTimedOut(false);
+    if (map && saved) {
+      clusterGroupRef.current?.unspiderfy?.();
+      map.stop();
+      map.flyTo([saved.lat, saved.lng], saved.zoom, {
+        animate: true,
+        duration: DISCOVER_FLY_OUT,
+      });
+      mapViewBeforeRef.current = null;
+    }
     setSelectedTrail(null);
-    setSelectedTrailPath(null);
   }, []);
 
   const revealTrailOnMap = useCallback(async (trail, mapInstance) => {
@@ -255,7 +267,7 @@ export default function MapDiscover() {
       mapInstance.stop();
       mapInstance.flyTo([trail.lat, trail.lon], 14, {
         animate: true,
-        duration: 0.35,
+        duration: DISCOVER_FLY_IN,
       });
     }
 
@@ -273,8 +285,7 @@ export default function MapDiscover() {
         paddingTopLeft: [26, 26],
         paddingBottomRight: [26, bottomPad],
         maxZoom: 15,
-        animate: true,
-        duration: 0.45,
+        duration: DISCOVER_FLY_IN,
       });
     }
 
@@ -425,6 +436,7 @@ export default function MapDiscover() {
             points={filteredPoints}
             onRevealTrail={revealTrailOnMap}
             onClusterClickStart={closeSelections}
+            clusterGroupRef={clusterGroupRef}
           />
           {selectedTrailPath && selectedTrailPath.length >= 2 && (
             <Polyline

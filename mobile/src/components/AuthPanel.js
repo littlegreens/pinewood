@@ -13,7 +13,7 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Svg, { Path } from "react-native-svg";
-import { setStoredAccessToken, setStoredRefreshToken, setStoredUserProfile } from "../services/api";
+import { persistAuthSession } from "../services/api";
 import { AUTH_MSG, isEmailNotVerifiedResponse } from "../services/authMessages";
 import { colors, fonts, borderRadius } from "../theme";
 import { safeBottom } from "../theme/safeArea";
@@ -165,9 +165,11 @@ export default function AuthPanel({ visible, onClose, onSuccess, initialTab = "l
         return;
       }
       if (data.accessToken) {
-        await setStoredAccessToken(data.accessToken);
-        if (data.refreshToken) await setStoredRefreshToken(data.refreshToken);
-        if (data.user) await setStoredUserProfile(data.user);
+        await persistAuthSession({
+          accessToken: data.accessToken,
+          refreshToken: data.refreshToken,
+          user: data.user,
+        });
         reset();
         onSuccess?.();
       }
@@ -210,9 +212,11 @@ export default function AuthPanel({ visible, onClose, onSuccess, initialTab = "l
         return;
       }
       if (data.accessToken) {
-        await setStoredAccessToken(data.accessToken);
-        if (data.refreshToken) await setStoredRefreshToken(data.refreshToken);
-        if (data.user) await setStoredUserProfile(data.user);
+        await persistAuthSession({
+          accessToken: data.accessToken,
+          refreshToken: data.refreshToken,
+          user: data.user,
+        });
         reset();
         onSuccess?.();
       } else {

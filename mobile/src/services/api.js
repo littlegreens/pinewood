@@ -38,6 +38,14 @@ export async function setStoredRefreshToken(token) {
   await SecureStore.setItemAsync(REFRESH_KEY, token);
 }
 
+/** Salva sessione dopo login/registrazione e notifica l’UI. */
+export async function persistAuthSession({ accessToken, refreshToken, user } = {}) {
+  if (accessToken) await setStoredAccessToken(accessToken);
+  if (refreshToken) await setStoredRefreshToken(refreshToken);
+  if (user) await setStoredUserProfile(user);
+  notifyListeners({ type: "auth-updated" });
+}
+
 export async function getStoredRefreshToken() {
   return SecureStore.getItemAsync(REFRESH_KEY);
 }
@@ -62,22 +70,24 @@ export async function setStoredUserProfile(user) {
 }
 
 export async function refreshAccessToken() {
+  const refreshToken = await getStoredRefreshToken();
+  if (!refreshToken) return null;
+  let response;
   try {
-    const refreshToken = await getStoredRefreshToken();
-    if (!refreshToken) return null;
-    const response = await fetch(`${API_BASE}/api/auth/refresh`, {
+    response = await fetch(`${API_BASE}/api/auth/refresh`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ refreshToken }),
     });
-    if (!response.ok) return null;
-    const data = await response.json();
-    await setStoredAccessToken(data.accessToken);
-    if (data.refreshToken) await setStoredRefreshToken(data.refreshToken);
-    return data.accessToken;
   } catch {
-    return null;
+    // Rete assente: non cancellare la sessione salvata.
+    throw new Error("NETWORK_ERROR");
   }
+  if (!response.ok) return null;
+  const data = await response.json();
+  await setStoredAccessToken(data.accessToken);
+  if (data.refreshToken) await setStoredRefreshToken(data.refreshToken);
+  return data.accessToken;
 }
 
 async function fetchWithTimeout(url, options = {}, timeoutMs = 30000) {
@@ -110,7 +120,11 @@ export async function apiFetch(path, options = {}) {
   let response = await makeRequest(token);
 
   if (response.status === 401) {
-    token = await refreshAccessToken();
+    try {
+      token = await refreshAccessToken();
+    } catch {
+      return response;
+    }
     if (!token) {
       await clearStoredAuth("session_expired");
       return response;
@@ -124,44 +138,74 @@ export async function apiFetch(path, options = {}) {
   return response;
 }
 
-async function syncStoredUserProfile() {
-  try {
-    const res = await apiFetch("/api/users/me");
-    if (!res.ok) return false;
-    const data = await res.json();
-    await setStoredUserProfile({
-      id: data.id,
-      email: data.email,
-      name: data.name,
-      avatar_url: data.avatar_url,
-      role: data.role,
-    });
-    return true;
-  } catch {
+export async function bootstrapAuth() {
+  let token = await getStoredAccessToken();
+  const refreshStored = await getStoredRefreshToken();
+
+  if (!token && refreshStored) {
+    try {
+      token = await refreshAccessToken();
+    } catch {
+      const profile = await getStoredUserProfile();
+      return Boolean(profile || refreshStored);
+    }
+  }
+
+  if (!token) {
+    if (!refreshStored) await clearStoredAuth();
     return false;
   }
-}
 
-export async function bootstrapAuth() {
-  const token = await getStoredAccessToken();
-  if (token) {
-    const ok = await syncStoredUserProfile();
-    if (!ok) {
-      const newToken = await refreshAccessToken();
-      if (!newToken) {
-        await clearStoredAuth();
-        return false;
-      }
-      const synced = await syncStoredUserProfile();
-      if (!synced) {
-        await clearStoredAuth();
-        return false;
+  try {
+    const res = await apiFetch("/api/users/me");
+    if (res.ok) {
+      const data = await res.json();
+      await setStoredUserProfile({
+        id: data.id,
+        email: data.email,
+        name: data.name,
+        avatar_url: data.avatar_url,
+        role: data.role,
+      });
+      notifyListeners({ type: "auth-restored" });
+      return true;
+    }
+    if (res.status === 401 || res.status === 403) {
+      try {
+        const newToken = await refreshAccessToken();
+        if (!newToken) {
+          await clearStoredAuth();
+          return false;
+        }
+        const retry = await apiFetch("/api/users/me");
+        if (retry.ok) {
+          const data = await retry.json();
+          await setStoredUserProfile({
+            id: data.id,
+            email: data.email,
+            name: data.name,
+            avatar_url: data.avatar_url,
+            role: data.role,
+          });
+          notifyListeners({ type: "auth-restored" });
+          return true;
+        }
+        if (retry.status === 401 || retry.status === 403) {
+          await clearStoredAuth();
+          return false;
+        }
+      } catch {
+        const profile = await getStoredUserProfile();
+        return Boolean(profile);
       }
     }
-    return true;
+    // Server offline o errore temporaneo: resta loggato con profilo in cache.
+    const profile = await getStoredUserProfile();
+    return Boolean(profile || token);
+  } catch {
+    const profile = await getStoredUserProfile();
+    return Boolean(profile || token || refreshStored);
   }
-  await clearStoredAuth();
-  return false;
 }
 
 export function apiUrl(path) {

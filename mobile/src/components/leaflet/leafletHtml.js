@@ -30,6 +30,8 @@ export const LEAFLET_HTML = `<!DOCTYPE html>
   var interactive = true;
   var courseUpEnabled = false;
   var savedDiscoverView = null;
+  var DISCOVER_FLY_IN = 0.5;
+  var DISCOVER_FLY_OUT = 0.45;
 
   function post(msg) {
     if (window.ReactNativeWebView) {
@@ -93,14 +95,21 @@ export const LEAFLET_HTML = `<!DOCTYPE html>
     if (pathLayer) { map.removeLayer(pathLayer); pathLayer = null; }
   }
 
+  function unspiderfyCluster() {
+    if (clusterGroup && typeof clusterGroup.unspiderfy === "function") {
+      clusterGroup.unspiderfy();
+    }
+  }
+
   function clearPath() {
     clearPathLayer();
     if (savedDiscoverView && mode === "discover") {
+      unspiderfyCluster();
       map.stop();
-      map.setView(
+      map.flyTo(
         [savedDiscoverView.lat, savedDiscoverView.lng],
         savedDiscoverView.zoom,
-        { animate: true, duration: 0.35 }
+        { animate: true, duration: DISCOVER_FLY_OUT }
       );
       savedDiscoverView = null;
     }
@@ -128,6 +137,8 @@ export const LEAFLET_HTML = `<!DOCTYPE html>
       zoomToBoundsOnClick: true,
       removeOutsideVisibleBounds: true,
       maxClusterRadius: 52,
+      animate: false,
+      animateAddingMarkers: false,
       iconCreateFunction: function (cluster) {
         return L.divIcon({
           className: "pinewood-cluster-icon",
@@ -149,7 +160,7 @@ export const LEAFLET_HTML = `<!DOCTYPE html>
   }
 
   function drawPath(latlngs, color, weight) {
-    clearPath();
+    clearPathLayer();
     if (!latlngs || latlngs.length < 2) return null;
     pathLayer = L.polyline(latlngs, {
       color: color || "#2d4f1e",
@@ -160,16 +171,24 @@ export const LEAFLET_HTML = `<!DOCTYPE html>
     return pathLayer;
   }
 
+  /** flyToBounds: animazione fluida anche su grandi distanze (fitBounds pu? ?scattare? in WebView). */
   function fitLatLngs(latlngs, bottomPad) {
     if (!latlngs || latlngs.length < 2) return;
     var bounds = L.latLngBounds(latlngs);
     if (!bounds.isValid()) return;
-    map.fitBounds(bounds, {
+    map.stop();
+    map.flyToBounds(bounds, {
       paddingTopLeft: [26, 26],
       paddingBottomRight: [26, bottomPad || 26],
       maxZoom: 15,
-      animate: true,
+      duration: DISCOVER_FLY_IN,
     });
+  }
+
+  function flyToLatLon(lat, lon, zoom) {
+    if (lat == null || lon == null) return;
+    map.stop();
+    map.flyTo([lat, lon], zoom != null ? zoom : 14, { duration: DISCOVER_FLY_IN });
   }
 
   function fitPoints(points) {
@@ -293,9 +312,7 @@ export const LEAFLET_HTML = `<!DOCTYPE html>
         if (msg.path) fitLatLngs(msg.path, msg.bottomPad);
         break;
       case "locate":
-        if (msg.lat != null && msg.lon != null) {
-          map.setView([msg.lat, msg.lon], msg.zoom || 13, { animate: true });
-        }
+        flyToLatLon(msg.lat, msg.lon, msg.zoom != null ? msg.zoom : 14);
         break;
       case "setTrail":
         setTrailDetail(msg);

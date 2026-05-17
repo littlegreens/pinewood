@@ -179,9 +179,9 @@ export default function MapDiscoverScreen() {
   }, [selectedTrail?.id]);
 
   const closeCard = useCallback(() => {
-    setSelectedTrail(null);
-    setTrailPath([]);
     mapRef.current?.clearPath();
+    setTrailPath([]);
+    setSelectedTrail(null);
   }, []);
 
   const centerOnUser = useCallback(async () => {

@@ -22,7 +22,14 @@ import {
 } from "./SvgIcons";
 import AuthPanel from "./AuthPanel";
 import { colors, fonts } from "../theme";
-import { getStoredUserProfile, getStoredAccessToken, clearStoredAuth } from "../services/api";
+import {
+  getStoredUserProfile,
+  getStoredAccessToken,
+  getStoredRefreshToken,
+  clearStoredAuth,
+  subscribeAuth,
+  getApiBase,
+} from "../services/api";
 import { detectLanguage, t } from "../services/i18n";
 
 const DRAWER_W = 280;
@@ -112,16 +119,21 @@ function DrawerOverlay({ slideAnim, fadeAnim, onClose, onOpenLogin, navRef, curr
   const [user, setUser] = useState(null);
   const [isGuest, setIsGuest] = useState(true);
 
-  useEffect(() => {
-    (async () => {
-      const token = await getStoredAccessToken();
-      setIsGuest(!token);
-      if (token) {
-        const profile = await getStoredUserProfile();
-        setUser(profile);
-      }
-    })();
+  const refreshDrawerAuth = useCallback(async () => {
+    const token = await getStoredAccessToken();
+    setIsGuest(!token);
+    if (token) {
+      const profile = await getStoredUserProfile();
+      setUser(profile);
+    } else {
+      setUser(null);
+    }
   }, []);
+
+  useEffect(() => {
+    refreshDrawerAuth();
+    return subscribeAuth(() => refreshDrawerAuth());
+  }, [refreshDrawerAuth]);
 
   const go = useCallback(
     (screen) => {
@@ -138,8 +150,11 @@ function DrawerOverlay({ slideAnim, fadeAnim, onClose, onOpenLogin, navRef, curr
   const handleLogout = useCallback(async () => {
     onClose();
     try {
-      await fetch("https://pinewood.to/api/auth/logout", {
+      const refreshToken = await getStoredRefreshToken();
+      await fetch(`${getApiBase()}/api/auth/logout`, {
         method: "DELETE",
+        headers: refreshToken ? { "Content-Type": "application/json" } : undefined,
+        body: refreshToken ? JSON.stringify({ refreshToken }) : undefined,
       });
     } catch {}
     await clearStoredAuth();

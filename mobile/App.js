@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { View, StatusBar, StyleSheet } from "react-native";
+import { View, StatusBar, StyleSheet, useWindowDimensions } from "react-native";
 import { NavigationContainer } from "@react-navigation/native";
 import { SafeAreaProvider, useSafeAreaInsets } from "react-native-safe-area-context";
 import * as SplashScreen from "expo-splash-screen";
@@ -20,17 +20,11 @@ import { colors } from "./src/theme";
 SplashScreen.preventAutoHideAsync();
 
 function BootSplash() {
-  const insets = useSafeAreaInsets();
+  const { width } = useWindowDimensions();
+  const logoW = Math.min(width - 48, 300);
   return (
     <View style={styles.splash}>
-      <View
-        style={{
-          paddingTop: insets.top + 12,
-          paddingLeft: Math.max(16, insets.left + 8),
-        }}
-      >
-        <PinewoodLogo width={220} color="#fff" />
-      </View>
+      <PinewoodLogo width={logoW} color="#fff" />
     </View>
   );
 }
@@ -103,5 +97,8 @@ const styles = StyleSheet.create({
   splash: {
     flex: 1,
     backgroundColor: colors.pineGreen,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 24,
   },
 });

@@ -4,6 +4,7 @@ import {
   Text,
   StyleSheet,
   ImageBackground,
+  Pressable,
   TouchableOpacity,
   TextInput,
   useWindowDimensions,
@@ -33,6 +34,18 @@ function ScrollHint({ bottom }) {
     <View style={[styles.scrollHint, { bottom }]}>
       <KeyboardArrowDownIcon size={28} color="rgba(255,255,255,0.6)" />
     </View>
+  );
+}
+
+/** Evita che lo ScrollView paging rubi il primo tap (doppio click). */
+function HomeActionButton({ style, onPress, children }) {
+  return (
+    <Pressable
+      style={({ pressed }) => [style, pressed && { opacity: 0.88 }]}
+      onPress={onPress}
+    >
+      {children}
+    </Pressable>
   );
 }
 
@@ -100,8 +113,10 @@ export default function HomeScreen() {
   }
 
   const headerH = insets.top + 6 + 50 + 1;
-  const pageH = winH - headerH - insets.bottom;
-  const scrollHintBottom = 20;
+  /** Sezione a tutto viewport (foto anche sotto barra di sistema trasparente). */
+  const pageH = winH - headerH;
+  const scrollHintBottom = safeBottom(insets, 16);
+  const contentBottomPad = safeBottom(insets, 28);
 
   return (
     <View style={styles.root}>
@@ -113,12 +128,13 @@ export default function HomeScreen() {
         decelerationRate="fast"
         snapToInterval={pageH}
         snapToAlignment="start"
+        keyboardShouldPersistTaps="handled"
       >
         {/* 1 - Hero */}
         <View style={{ height: pageH }}>
           <ImageBackground source={IMAGES.hero} style={styles.bg} resizeMode="cover">
             <View style={styles.overlay} />
-            <View style={styles.centered}>
+            <View style={[styles.centered, { paddingBottom: contentBottomPad }]}>
               <Text style={styles.heroTitle}>Keep the way</Text>
               <Text style={styles.heroSub}>
                 Pinewood nasce per chi cammina davvero, senza filtri e senza
@@ -137,7 +153,7 @@ export default function HomeScreen() {
         <View style={{ height: pageH }}>
           <ImageBackground source={IMAGES.chiSiamo} style={styles.bg} resizeMode="cover">
             <View style={[styles.overlay, { backgroundColor: "rgba(10,18,12,0.55)" }]} />
-            <View style={styles.centered}>
+            <View style={[styles.centered, { paddingBottom: contentBottomPad }]}>
               <Text style={styles.sectionBody}>
                 Solo sentieri, navigazione GPS e la community di chi condivide i
                 propri percorsi. Niente social, niente vanity metrics.
@@ -160,30 +176,28 @@ export default function HomeScreen() {
         <View style={{ height: pageH }}>
           <ImageBackground source={IMAGES.esplora} style={styles.bg} resizeMode="cover">
             <View style={styles.overlay} />
-            <View style={styles.centered}>
+            <View style={[styles.centered, { paddingBottom: contentBottomPad }]}>
               <Text style={styles.sectionTitle}>Esplora i sentieri</Text>
               <Text style={styles.sectionBody}>
                 Centinaia di percorsi caricati da chi cammina, pronti da
                 esplorare e navigare. Cerca per nome o per luogo, apri la mappa
                 e trova il tuo prossimo sentiero.
               </Text>
-              <View style={styles.btnRow}>
-                <TouchableOpacity
+              <View style={styles.btnRow} onStartShouldSetResponder={() => true}>
+                <HomeActionButton
                   style={styles.btnPrimary}
                   onPress={() => navigation.navigate("Trails")}
-                  activeOpacity={0.8}
                 >
                   <HikingIcon size={20} color={colors.pineGreen} />
                   <Text style={styles.btnPrimaryText}>Trails</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
+                </HomeActionButton>
+                <HomeActionButton
                   style={styles.btnOutline}
                   onPress={() => navigation.navigate("MapDiscover")}
-                  activeOpacity={0.8}
                 >
                   <ExploreIcon size={20} color={colors.white} />
                   <Text style={styles.btnOutlineText}>Mappa</Text>
-                </TouchableOpacity>
+                </HomeActionButton>
               </View>
             </View>
             <ScrollHint bottom={scrollHintBottom} />
@@ -195,7 +209,7 @@ export default function HomeScreen() {
           <View style={{ height: pageH }}>
             <ImageBackground source={IMAGES.entra} style={styles.bg} resizeMode="cover">
               <View style={[styles.overlay, { backgroundColor: "rgba(10,18,12,0.55)" }]} />
-              <View style={styles.centered}>
+              <View style={[styles.centered, { paddingBottom: contentBottomPad }]}>
                 <Text style={styles.sectionTitle}>Entra in Pinewood</Text>
                 <Text style={styles.sectionBody}>
                   Crea un account gratuito per sbloccare tutto: carica i tuoi
@@ -205,21 +219,19 @@ export default function HomeScreen() {
                 <Text style={[styles.sectionBodyBold, { marginTop: 14 }]}>
                   Nessun abbonamento, nessun costo nascosto. Solo sentieri.
                 </Text>
-                <View style={styles.btnRow}>
-                  <TouchableOpacity
+                <View style={styles.btnRow} onStartShouldSetResponder={() => true}>
+                  <HomeActionButton
                     style={styles.btnPrimary}
                     onPress={() => { setAuthTab("login"); setShowAuth(true); }}
-                    activeOpacity={0.8}
                   >
                     <Text style={styles.btnPrimaryText}>Login</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
+                  </HomeActionButton>
+                  <HomeActionButton
                     style={styles.btnOutline}
                     onPress={() => { setAuthTab("register"); setShowAuth(true); }}
-                    activeOpacity={0.8}
                   >
                     <Text style={styles.btnOutlineText}>Registrati</Text>
-                  </TouchableOpacity>
+                  </HomeActionButton>
                 </View>
               </View>
               <ScrollHint bottom={scrollHintBottom} />
@@ -238,7 +250,7 @@ export default function HomeScreen() {
             >
               <ScrollView
                 style={{ width: "100%" }}
-                contentContainerStyle={styles.contactScroll}
+                contentContainerStyle={[styles.contactScroll, { paddingBottom: contentBottomPad }]}
                 keyboardShouldPersistTaps="handled"
                 showsVerticalScrollIndicator={false}
                 nestedScrollEnabled

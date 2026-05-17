@@ -286,13 +286,17 @@ export default function Home() {
     setTimeout(() => { animating.current = false; }, 650);
   }, [current, totalSections]);
 
+  const stopSwipeCapture = (e) => {
+    e.stopPropagation();
+  };
+
   const bind = useDrag(({ swipe: [, sy], direction: [, dy], distance: [, distY], last, memo, first, xy: [, y] }) => {
     if (first) return y;
     if (!last) return memo;
     if (sy !== 0) { goTo(current - sy); }
     else if (distY > 40) { goTo(dy < 0 ? current + 1 : current - 1); }
     return memo;
-  }, { axis: "y", filterTaps: true, pointer: { touch: true } });
+  }, { axis: "y", filterTaps: true, threshold: 14, pointer: { touch: true } });
 
   useEffect(() => {
     const el = containerRef.current;
@@ -375,7 +379,7 @@ export default function Home() {
           {/* 1. HERO */}
           <Box sx={{ ...sectionSx, backgroundImage: "url('/bg_home_05.webp')", backgroundSize: "cover", backgroundPosition: "center", backgroundColor: "#1b2a1f" }}>
             <Box sx={{ position: "absolute", inset: 0, background: "linear-gradient(180deg, rgba(10,18,12,0.35) 0%, rgba(10,18,12,0.55) 100%)" }} />
-            <Box sx={{ position: "relative", zIndex: 1, px: 3, ...pageContainerSx, textAlign: "center" }}>
+            <Box sx={{ position: "relative", zIndex: 1, px: 3, pb: safeBottomCss(28), ...pageContainerSx, textAlign: "center" }}>
               <Typography sx={{ color: "#fff", fontSize: { xs: "2.2rem !important", md: "3.2rem !important" }, lineHeight: 1.2, textShadow: "0 6px 32px rgba(0,0,0,0.6)", mb: 3 }}>
           Keep the way
         </Typography>
@@ -391,7 +395,7 @@ export default function Home() {
           {/* 2. CHI SIAMO */}
           <Box sx={{ ...sectionSx, backgroundImage: "url('/bg_home_08.webp')", backgroundSize: "cover", backgroundPosition: "center", backgroundColor: "#1b2a1f" }}>
             <Box sx={{ position: "absolute", inset: 0, background: "linear-gradient(180deg, rgba(10,18,12,0.4) 0%, rgba(10,18,12,0.6) 100%)" }} />
-            <PageContainer sx={{ position: "relative", zIndex: 1 }}>
+            <PageContainer sx={{ position: "relative", zIndex: 1, pb: safeBottomCss(28) }}>
               <Stack spacing={2.5} sx={{ textAlign: "center", py: { xs: 4, md: 5 } }}>
                 <Typography sx={{ color: "rgba(255,255,255,0.92)", fontSize: "1.2rem !important", lineHeight: 1.85 }}>
                   Solo sentieri, navigazione GPS e la community di chi condivide i propri percorsi. Niente social, niente vanity metrics.
@@ -410,7 +414,7 @@ export default function Home() {
           {/* 3. CTA TRAILS / MAPPA */}
           <Box sx={{ ...sectionSx, backgroundImage: "url('/bg_home_07.webp')", backgroundSize: "cover", backgroundPosition: "center", backgroundColor: "#1b2a1f" }}>
             <Box sx={{ position: "absolute", inset: 0, background: "linear-gradient(180deg, rgba(10,18,12,0.3) 0%, rgba(10,18,12,0.6) 100%)" }} />
-            <Box sx={{ position: "relative", zIndex: 1, textAlign: "center", px: 3, ...pageContainerSx }}>
+            <Box sx={{ position: "relative", zIndex: 1, textAlign: "center", px: 3, pb: safeBottomCss(28), ...pageContainerSx }}>
               <Typography sx={{ color: "#fff", fontWeight: 800, fontSize: { xs: "1.8rem !important", md: "2.5rem !important" }, textShadow: "0 4px 20px rgba(0,0,0,0.5)", mb: 2 }}>
                 Esplora i sentieri
               </Typography>
@@ -420,7 +424,13 @@ export default function Home() {
               <Typography sx={{ color: "rgba(255,255,255,0.78)", fontSize: "1.2rem !important", lineHeight: 1.7, mb: 4, textShadow: "0 2px 12px rgba(0,0,0,0.35)" }}>
                 Dalla passeggiata nel bosco al trekking in quota, ogni traccia è stata percorsa e condivisa da qualcuno come te. Scegli il percorso, parti con la navigazione GPS e goditi il cammino.
               </Typography>
-              <Stack direction="row" spacing={2.5} sx={{ justifyContent: "center", flexWrap: "wrap" }}>
+              <Stack
+                direction="row"
+                spacing={2.5}
+                sx={{ justifyContent: "center", flexWrap: "wrap", position: "relative", zIndex: 5, touchAction: "manipulation" }}
+                onPointerDown={stopSwipeCapture}
+                onClick={stopSwipeCapture}
+              >
                 <Button variant="contained" size="large" startIcon={<HikingIcon />} onClick={() => navigate("/app/trails")} sx={{ px: 4, borderRadius: 99, fontWeight: 700, bgcolor: "#fff", color: "#2D4F1E", "&:hover": { bgcolor: "#f0f0f0" } }}>
                   Trails
                 </Button>
@@ -436,7 +446,7 @@ export default function Home() {
           {isGuest && (
             <Box sx={{ ...sectionSx, backgroundImage: "url('/bg_home_04.webp')", backgroundSize: "cover", backgroundPosition: "center", backgroundColor: "#1b2a1f" }}>
               <Box sx={{ position: "absolute", inset: 0, background: "linear-gradient(180deg, rgba(10,18,12,0.4) 0%, rgba(10,18,12,0.6) 100%)" }} />
-              <PageContainer sx={{ position: "relative", zIndex: 1 }}>
+              <PageContainer sx={{ position: "relative", zIndex: 1, pb: safeBottomCss(28) }}>
                 <Stack spacing={2.5} sx={{ textAlign: "center", py: { xs: 4, md: 5 } }}>
                   <Typography sx={{ fontWeight: 800, color: "#fff", fontSize: { xs: "1.8rem !important", md: "2.5rem !important" }, textShadow: "0 4px 20px rgba(0,0,0,0.5)" }}>
                     Entra in Pinewood
@@ -450,7 +460,13 @@ export default function Home() {
                   <Typography sx={{ lineHeight: 1.7, fontWeight: 600, color: "#fff", fontSize: "1.2rem !important" }}>
                     Nessun abbonamento, nessun costo nascosto. Solo sentieri.
                   </Typography>
-                  <Stack direction="row" spacing={1.5} sx={{ justifyContent: "center", pt: 1 }}>
+                  <Stack
+                    direction="row"
+                    spacing={1.5}
+                    sx={{ justifyContent: "center", pt: 1, position: "relative", zIndex: 5, touchAction: "manipulation" }}
+                    onPointerDown={stopSwipeCapture}
+                    onClick={stopSwipeCapture}
+                  >
                     <Button variant="contained" size="large" onClick={() => { setIsRegister(false); setShowLogin(true); }} sx={{ px: 4, borderRadius: 99, fontWeight: 700, bgcolor: "#fff", color: "#2D4F1E", "&:hover": { bgcolor: "#f0f0f0" } }}>
                       {t(lang, "login")}
                     </Button>
@@ -467,7 +483,7 @@ export default function Home() {
           {/* 5. CONTATTACI */}
           <Box sx={{ ...sectionSx, backgroundImage: "url('/bg_home_06.webp')", backgroundSize: "cover", backgroundPosition: "center", backgroundColor: "#1b2a1f" }}>
             <Box sx={{ position: "absolute", inset: 0, background: "linear-gradient(180deg, rgba(10,18,12,0.4) 0%, rgba(10,18,12,0.65) 100%)" }} />
-            <PageContainer sx={{ py: { xs: 4, md: 5 }, position: "relative", zIndex: 1 }}>
+            <PageContainer sx={{ py: { xs: 4, md: 5 }, pb: safeBottomCss(28), position: "relative", zIndex: 1 }}>
               <Stack spacing={2}>
                 <Typography sx={{ fontWeight: 800, color: "#fff", textAlign: "center", fontSize: { xs: "1.8rem !important", md: "2.5rem !important" }, textShadow: "0 4px 20px rgba(0,0,0,0.5)" }}>
                   Contattaci
