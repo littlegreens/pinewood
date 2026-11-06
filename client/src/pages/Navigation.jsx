@@ -3,6 +3,8 @@ import L from "leaflet";
 import { Box, IconButton, Typography } from "@mui/material";
 import StopIcon from "@mui/icons-material/Stop";
 import ExploreIcon from "@mui/icons-material/Explore";
+import PlaceIcon from "@mui/icons-material/Place";
+import HideSourceIcon from "@mui/icons-material/HideSource";
 import { MapContainer, Marker, Polyline, TileLayer, useMap } from "react-leaflet";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { detectLanguage, t } from "../services/i18n.js";
@@ -88,24 +90,19 @@ const USER_MARKER_ICON = L.divIcon({
 });
 
 /**
- * Freccia stabile via DOM.
- * Track-up (compassOn): tip sempre in alto = direzione di marcia (mappa già ruotata).
- * Nord-up: tip = heading assoluto.
- * Dipende da headingDeg anche in track-up per riapplicare a ogni fix (evita freccia “congelata”).
+ * Freccia: tip = heading assoluto in entrambe le modalità.
+ * Con bussola ON il mapPane ruota di -heading → punta in alto (guarda avanti).
+ * Con bussola OFF la mappa resta a nord e ruota solo il triangolo.
  */
-function NavigationUserMarker({ position, headingDeg, compassOn = false }) {
+function NavigationUserMarker({ position, headingDeg }) {
   const markerRef = useRef(null);
   useEffect(() => {
     const el = markerRef.current?.getElement?.();
     const rot = el?.querySelector?.(".pinewood-nav-user-rot");
     if (!rot) return;
-    const deg = compassOn
-      ? 0
-      : typeof headingDeg === "number" && !Number.isNaN(headingDeg)
-        ? headingDeg
-        : 0;
+    const deg = typeof headingDeg === "number" && !Number.isNaN(headingDeg) ? headingDeg : 0;
     rot.style.transform = `rotate(${deg}deg)`;
-  }, [headingDeg, compassOn, position]);
+  }, [headingDeg, position]);
   return <Marker ref={markerRef} position={position} icon={USER_MARKER_ICON} />;
 }
 
@@ -169,7 +166,6 @@ export default function Navigation() {
   const pendingOnRouteSinceRef = useRef(null);
   const centeredOnStartRef = useRef(false);
   const userPannedRef = useRef(false);
-  const followPanAtRef = useRef(0);
   const lastPositionPublishAtRef = useRef(0);
   const lastPublishedPosRef = useRef(null);
   const actualTrackRef = useRef([]);
@@ -177,6 +173,7 @@ export default function Navigation() {
   const [loadError, setLoadError] = useState("");
   /** Bussola ON = track-up (dove guardo); OFF = nord / rotazione manuale 2 dita. */
   const [compassOn, setCompassOn] = useState(false);
+  const [showPois, setShowPois] = useState(true);
   const [manualBearing, setManualBearing] = useState(0);
   const onManualBearingChange = useCallback((deg) => setManualBearing(deg), []);
   const isOfflineLocalSession = useMemo(
@@ -772,7 +769,7 @@ export default function Navigation() {
     centeredOnStartRef.current = true;
   }, [mapInstance, startGate, position]);
 
-  // Accensione bussola: un solo ricentra. Niente pan continuo (era la causa degli scatti).
+  // Accensione bussola: un solo ricentra. Nessun follow continuo (rompe i layer).
   useEffect(() => {
     if (!compassOn || !mapInstance || !position) return;
     if (!isLeafletMapUsable(mapInstance)) return;
@@ -784,24 +781,6 @@ export default function Navigation() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [compassOn]);
-
-  // Track-up: segui solo se ti sei mosso davvero (>18 m dal centro mappa), max ~0.5 Hz.
-  useEffect(() => {
-    if (!compassOn || !mapInstance || startGate !== "ready" || !position) return;
-    if (!isLeafletMapUsable(mapInstance)) return;
-    if (userPannedRef.current) return;
-    const now = Date.now();
-    if (now - (followPanAtRef.current || 0) < 1800) return;
-    try {
-      const center = mapInstance.getCenter();
-      const dist = distanceMeters([center.lat, center.lng], position);
-      if (dist < 18) return;
-      followPanAtRef.current = now;
-      mapInstance.panTo(position, { animate: false });
-    } catch {
-      /* ignore */
-    }
-  }, [compassOn, mapInstance, startGate, position]);
 
   useEffect(() => {
     actualTrackRef.current = actualTrack;
@@ -1120,6 +1099,9 @@ export default function Navigation() {
                   right: 12,
                   zIndex: 1400,
                   pointerEvents: "none",
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 1,
                 }}
               >
                 <IconButton
@@ -1144,6 +1126,23 @@ export default function Navigation() {
                   }}
                 >
                   <ExploreIcon sx={{ fontSize: 26 }} />
+                </IconButton>
+                <IconButton
+                  onClick={() => setShowPois((v) => !v)}
+                  aria-label={showPois ? "Nascondi POI" : "Mostra POI"}
+                  aria-pressed={showPois}
+                  sx={{
+                    pointerEvents: "auto",
+                    width: 44,
+                    height: 44,
+                    bgcolor: showPois ? "rgba(255,255,255,0.94)" : "#455A64",
+                    color: showPois ? "#111" : "#fff",
+                    border: "1px solid rgba(0,0,0,0.08)",
+                    boxShadow: "0 2px 10px rgba(0,0,0,0.14)",
+                    "&:hover": { bgcolor: showPois ? "#fff" : "#37474F" },
+                  }}
+                >
+                  {showPois ? <PlaceIcon sx={{ fontSize: 24 }} /> : <HideSourceIcon sx={{ fontSize: 24 }} />}
                 </IconButton>
               </Box>
             )}
@@ -1199,18 +1198,33 @@ export default function Navigation() {
                 headingDeg={userHeading}
                 manualBearing={manualBearing}
                 onManualBearingChange={onManualBearingChange}
+                freezeBearing={isOffRoute}
               />
               <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" attribution="" />
               {line.length > 1 && (
                 <Polyline
                   positions={line}
-                  pathOptions={{ color: "#2D4F1E", weight: 4, className: "pinewood-fixed-stroke" }}
+                  pathOptions={{
+                    color: "#2D4F1E",
+                    weight: 5,
+                    opacity: 1,
+                    lineCap: "round",
+                    lineJoin: "round",
+                    className: "pinewood-fixed-stroke",
+                  }}
                 />
               )}
               {actualTrack.length > 1 && (
                 <Polyline
                   positions={actualTrack}
-                  pathOptions={{ color: "#c9a84c", weight: 3, opacity: 0.9, className: "pinewood-fixed-stroke" }}
+                  pathOptions={{
+                    color: "#c9a84c",
+                    weight: 3,
+                    opacity: 0.9,
+                    lineCap: "round",
+                    lineJoin: "round",
+                    className: "pinewood-fixed-stroke",
+                  }}
                 />
               )}
               {offRouteReconnectLine && (
@@ -1219,19 +1233,15 @@ export default function Navigation() {
                   pathOptions={{
                     color: "#ff6b00",
                     weight: 3,
-                    opacity: 0.95,
+                    opacity: 0.9,
                     dashArray: "10 8",
                     className: "pinewood-fixed-stroke",
                   }}
                 />
               )}
-              <WaypointMarkers waypoints={waypoints} />
+              {showPois && <WaypointMarkers waypoints={waypoints} />}
               {position && (
-                <NavigationUserMarker
-                  position={position}
-                  headingDeg={userHeading}
-                  compassOn={compassOn}
-                />
+                <NavigationUserMarker position={position} headingDeg={userHeading} />
               )}
             </MapContainer>
           </Box>
