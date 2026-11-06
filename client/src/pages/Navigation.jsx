@@ -79,19 +79,6 @@ function smoothHeadingDeg(prev, next, alpha = 0.22) {
   return normalizeAngleDeg(prev + delta * alpha);
 }
 
-/** Punto a N metri nella direzione heading (per mettere la freccia in basso in modalità bussola). */
-function destinationPoint(latlng, bearingDeg, distanceM) {
-  const R = 6371000;
-  const δ = distanceM / R;
-  const θ = (bearingDeg * Math.PI) / 180;
-  const φ1 = (latlng[0] * Math.PI) / 180;
-  const λ1 = (latlng[1] * Math.PI) / 180;
-  const φ2 = Math.asin(Math.sin(φ1) * Math.cos(δ) + Math.cos(φ1) * Math.sin(δ) * Math.cos(θ));
-  const λ2 =
-    λ1 + Math.atan2(Math.sin(θ) * Math.sin(δ) * Math.cos(φ1), Math.cos(δ) - Math.sin(φ1) * Math.sin(φ2));
-  return [(φ2 * 180) / Math.PI, ((((λ2 * 180) / Math.PI + 540) % 360) - 180)];
-}
-
 const USER_MARKER_ICON = L.divIcon({
   className: "pinewood-nav-user-icon",
   html: `<div class="pinewood-nav-user-rot" style="width:40px;height:40px;display:flex;align-items:center;justify-content:center;filter:drop-shadow(0 2px 4px rgba(0,0,0,0.4))"><svg width="30" height="30" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path fill="#e8c85c" stroke="#3a3a3a" stroke-width="1" stroke-linejoin="round" d="M12 3 L21 20 L12 15.5 L3 20 Z"/></svg></div>`,
@@ -764,11 +751,10 @@ export default function Navigation() {
     const markUserPan = () => {
       userPannedRef.current = true;
     };
+    // Solo drag interrompe il follow bussola; lo zoom resta libero senza “sbloccare” la freccia.
     mapInstance.on("dragstart", markUserPan);
-    mapInstance.on("zoomstart", markUserPan);
     return () => {
       mapInstance.off("dragstart", markUserPan);
-      mapInstance.off("zoomstart", markUserPan);
     };
     // Solo quando cambia la geometria della traccia, non a ogni fix GPS.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -782,39 +768,45 @@ export default function Navigation() {
     centeredOnStartRef.current = true;
   }, [mapInstance, startGate, position]);
 
-  // Accensione bussola: ricentra in modalità “freccia in basso”.
+  /** Bussola: GPS al centro Leaflet, poi panBy in alto → freccia in basso sullo schermo. */
+  function placeCompassCamera(map, latlng, zoom) {
+    const z = zoom ?? Math.max(map.getZoom() || 14, 16);
+    map.setView(latlng, z, { animate: false });
+    const h = map.getSize()?.y || 0;
+    if (h > 0) {
+      // ~28% verso il basso dello schermo (indipendente dall’heading / rotazione CSS).
+      map.panBy([0, -Math.round(h * 0.28)], { animate: false });
+    }
+  }
+
+  // Accensione bussola: freccia in basso, punta in alto.
   useEffect(() => {
     if (!compassOn || !mapInstance || !position) return;
     if (!isLeafletMapUsable(mapInstance)) return;
     userPannedRef.current = false;
     setManualBearing(0);
-    const heading = typeof userHeading === "number" && !Number.isNaN(userHeading) ? userHeading : 0;
-    const focus = destinationPoint(position, heading, 70);
     try {
-      mapInstance.setView(focus, Math.max(mapInstance.getZoom() || 14, 16), { animate: false });
+      placeCompassCamera(mapInstance, position);
     } catch {
       /* ignore */
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [compassOn]);
 
-  // Bussola: tieni il centro un po’ davanti a te → freccia resta verso il basso dello schermo.
+  // Bussola: se non hai trascinato a mano, tieni la freccia in basso mentre cammini.
   useEffect(() => {
     if (!compassOn || !mapInstance || startGate !== "ready" || !position) return;
     if (!isLeafletMapUsable(mapInstance)) return;
     if (userPannedRef.current) return;
     const now = Date.now();
-    if (now - (compassFollowAtRef.current || 0) < 900) return;
+    if (now - (compassFollowAtRef.current || 0) < 800) return;
     compassFollowAtRef.current = now;
-    const heading = typeof userHeading === "number" && !Number.isNaN(userHeading) ? userHeading : 0;
-    const focus = destinationPoint(position, heading, 70);
     try {
-      mapInstance.setView(focus, mapInstance.getZoom(), { animate: false });
+      placeCompassCamera(mapInstance, position, mapInstance.getZoom());
     } catch {
       /* ignore */
     }
-  }, [compassOn, mapInstance, startGate, position, userHeading]);
-
+  }, [compassOn, mapInstance, startGate, position]);
   useEffect(() => {
     actualTrackRef.current = actualTrack;
   }, [actualTrack]);
