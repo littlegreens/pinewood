@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Avatar,
   Box,
@@ -157,7 +157,7 @@ async function warmupTilesForLine(line, { installedPwa = false } = {}) {
   return { ok: okCount > 0, partial: okCount < urls.length };
 }
 
-function FitTrailBounds({ line }) {
+function FitTrailBounds({ line, trailKey }) {
   const map = useMap();
   useEffect(() => {
     if (!line?.length) return;
@@ -165,8 +165,10 @@ function FitTrailBounds({ line }) {
       map.setView(line[0], 15, { animate: false });
       return;
     }
-    map.fitBounds(line, { padding: [18, 18] });
-  }, [map, line]);
+    map.fitBounds(line, { padding: [18, 18], animate: false });
+    // Solo al cambio traccia, non a ogni re-render/scrub profilo.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [map, trailKey]);
   return null;
 }
 
@@ -301,17 +303,41 @@ export default function TrailDetail() {
         tail: rawDescription.slice(-140),
       });
       if (active) setTrail(data);
-      const offlinePayload = {
-        trailId: String(data?.id || trailId),
-        savedAt: Date.now(),
-        trailName: data?.name || "",
-        geom_geojson: data?.geom_geojson || null,
-        elevation_profile: Array.isArray(data?.elevation_profile) ? data.elevation_profile : [],
-        parse_status: data?.parse_status || null,
-        waypoints: Array.isArray(data?.waypoints) ? data.waypoints : [],
-      };
-      localStorage.setItem(offlineTrailStorageKey(trailId), JSON.stringify(offlinePayload));
-      localStorage.removeItem(legacyOfflineTrailStorageKey(trailId));
+      // Non corrompere la cache offline con geom vuota / elaborazione incompleta.
+      const coords = data?.geom_geojson?.coordinates;
+      if (Array.isArray(coords) && coords.length >= 2) {
+        try {
+          const key = offlineTrailStorageKey(trailId);
+          const existingRaw = localStorage.getItem(key);
+          let skip = false;
+          if (existingRaw) {
+            try {
+              const prev = JSON.parse(existingRaw);
+              const prevN = prev?.geom_geojson?.coordinates?.length || 0;
+              if (prevN > coords.length) skip = true;
+            } catch {
+              /* overwrite corrupt */
+            }
+          }
+          if (!skip) {
+            localStorage.setItem(
+              key,
+              JSON.stringify({
+                trailId: String(data?.id || trailId),
+                savedAt: Date.now(),
+                trailName: data?.name || "",
+                geom_geojson: data.geom_geojson,
+                elevation_profile: Array.isArray(data?.elevation_profile) ? data.elevation_profile : [],
+                parse_status: data?.parse_status || null,
+                waypoints: Array.isArray(data?.waypoints) ? data.waypoints : [],
+              }),
+            );
+            localStorage.removeItem(legacyOfflineTrailStorageKey(trailId));
+          }
+        } catch {
+          /* quota / private mode */
+        }
+      }
     }
     load();
     return () => {
@@ -361,8 +387,14 @@ export default function TrailDetail() {
     return coords.map(([lon, lat]) => [lat, lon]);
   }
 
-  const line = trail?.geom_geojson?.coordinates ? toLatLng(trail.geom_geojson.coordinates) : [];
+  const line = useMemo(
+    () => (trail?.geom_geojson?.coordinates ? toLatLng(trail.geom_geojson.coordinates) : []),
+    [trail?.geom_geojson],
+  );
   const mapCenter = line[0] || [41.9, 12.5];
+  const onTrailMapReady = useCallback((map) => {
+    trailMapRef.current = map;
+  }, []);
   const elevationProfile = Array.isArray(trail?.elevation_profile) ? trail.elevation_profile : [];
   const hasElevationProfile =
     trail?.parse_status !== "processing_elevation" &&
@@ -574,6 +606,7 @@ export default function TrailDetail() {
         body: JSON.stringify({ trailId }),
       });
       if (!res.ok) {
+        setPlayAlert({ type: "error", text: t(lang, "navLoadFailed") });
         setPlayStarting(false);
         return;
       }
@@ -955,8 +988,8 @@ export default function TrailDetail() {
               attributionControl={false}
               zoomControl={false}
             >
-              <MapReadyBridge onReady={(map) => (trailMapRef.current = map)} />
-              <FitTrailBounds line={line} />
+              <MapReadyBridge onReady={onTrailMapReady} />
+              <FitTrailBounds line={line} trailKey={String(trail?.id || trailId)} />
               <TileLayer
                 attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
                 url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"

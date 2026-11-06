@@ -75,22 +75,24 @@ function smoothHeadingDeg(prev, next, alpha = 0.22) {
   return normalizeAngleDeg(prev + delta * alpha);
 }
 
+const USER_MARKER_ICON = L.divIcon({
+  className: "pinewood-nav-user-icon",
+  html: `<div class="pinewood-nav-user-rot" style="width:40px;height:40px;display:flex;align-items:center;justify-content:center;filter:drop-shadow(0 2px 4px rgba(0,0,0,0.4))"><svg width="30" height="30" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path fill="#e8c85c" stroke="#3a3a3a" stroke-width="1" stroke-linejoin="round" d="M12 3 L21 20 L12 15.5 L3 20 Z"/></svg></div>`,
+  iconSize: [40, 40],
+  iconAnchor: [20, 20],
+});
+
+/** Freccia stabile: ruota via DOM, senza ricreare DivIcon a ogni grado. */
 function NavigationUserMarker({ position, headingDeg }) {
-  const icon = useMemo(() => {
-    const hasHeading = typeof headingDeg === "number" && !Number.isNaN(headingDeg);
-    const stroke = "#3a3a3a";
-    const fill = "#e8c85c";
-    const html = hasHeading
-      ? `<div style="width:40px;height:40px;display:flex;align-items:center;justify-content:center;transform:rotate(${headingDeg}deg);filter:drop-shadow(0 2px 4px rgba(0,0,0,0.4))"><svg width="30" height="30" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path fill="${fill}" stroke="${stroke}" stroke-width="1" stroke-linejoin="round" vector-effect="non-scaling-stroke" d="M12 3 L21 20 L12 15.5 L3 20 Z"/></svg></div>`
-      : `<div style="width:40px;height:40px;display:flex;align-items:center;justify-content:center;filter:drop-shadow(0 2px 4px rgba(0,0,0,0.35))"><div style="width:18px;height:18px;border-radius:50%;background:${fill};border:1px solid ${stroke};box-sizing:border-box"></div></div>`;
-    return L.divIcon({
-      className: "pinewood-nav-user-icon",
-      html,
-      iconSize: [40, 40],
-      iconAnchor: [20, 20],
-    });
+  const markerRef = useRef(null);
+  useEffect(() => {
+    const el = markerRef.current?.getElement?.();
+    const rot = el?.querySelector?.(".pinewood-nav-user-rot");
+    if (!rot) return;
+    const deg = typeof headingDeg === "number" && !Number.isNaN(headingDeg) ? headingDeg : 0;
+    rot.style.transform = `rotate(${deg}deg)`;
   }, [headingDeg]);
-  return <Marker position={position} icon={icon} />;
+  return <Marker ref={markerRef} position={position} icon={USER_MARKER_ICON} />;
 }
 
 function isLeafletMapUsable(map) {
@@ -151,8 +153,11 @@ export default function Navigation() {
   const [unlockDragging, setUnlockDragging] = useState(false);
   const pendingOffRouteSinceRef = useRef(null);
   const pendingOnRouteSinceRef = useRef(null);
-  const [showTrailLine, setShowTrailLine] = useState(false);
   const centeredOnStartRef = useRef(false);
+  const userPannedRef = useRef(false);
+  const actualTrackRef = useRef([]);
+  const deviationsCountRef = useRef(0);
+  const [loadError, setLoadError] = useState("");
   const isOfflineLocalSession = useMemo(
     () => String(sessionId || "").startsWith("local_") || location.state?.offlineSession === true,
     [sessionId, location.state]
@@ -314,10 +319,18 @@ export default function Navigation() {
           navigate("/");
           return;
         }
-        if (!res.ok) return;
+        if (!res.ok) {
+          setLoadError(t(lang, "navLoadFailed"));
+          return;
+        }
         const data = await res.json();
         if (cancelled) return;
         const coords = data?.geom_geojson?.coordinates || [];
+        if (!coords.length) {
+          setLoadError(t(lang, "trailNoGeometry"));
+          return;
+        }
+        setLoadError("");
         setLine(coords.map(([lon, lat]) => [lat, lon]));
         setElevationProfile(Array.isArray(data?.elevation_profile) ? data.elevation_profile : []);
         setParseStatus(data?.parse_status || null);
@@ -683,53 +696,49 @@ export default function Navigation() {
     };
   }, [pocketMode]);
 
-  // Camera iniziale (o dopo cambio traccia / uscita tasca). NON legare a `position`:
-  // ogni tick GPS rilanciava flyTo, nascondeva la polyline e annullava pan/zoom manuali.
+  // Camera iniziale una sola volta per traccia: setView senza nascondere la polyline.
   useEffect(() => {
     if (!mapInstance || line.length === 0) return;
-    if (pocketMode) return;
     if (!isLeafletMapUsable(mapInstance)) return;
-    setShowTrailLine(false);
     centeredOnStartRef.current = false;
+    userPannedRef.current = false;
 
-    // Apertura fluida: prima camera, poi disegno della traccia per evitare scatti.
-    const onMoveEnd = () => setShowTrailLine(true);
-    mapInstance.once("moveend", onMoveEnd);
-
+    mapInstance.stop();
     if (position) {
-      mapInstance.stop();
-      mapInstance.flyTo(position, Math.max(mapInstance.getZoom(), 15), {
-        animate: true,
-        duration: 0.8,
-        easeLinearity: 0.2,
-      });
+      mapInstance.setView(position, Math.max(mapInstance.getZoom() || 14, 15), { animate: false });
       centeredOnStartRef.current = true;
     } else {
-      mapInstance.fitBounds(line, {
-        padding: [18, 18],
-        animate: true,
-        duration: 0.8,
-      });
+      mapInstance.fitBounds(line, { padding: [18, 18], animate: false });
     }
 
-    return () => {
-      mapInstance.off("moveend", onMoveEnd);
+    const markUserPan = () => {
+      userPannedRef.current = true;
     };
-  }, [mapInstance, line, pocketMode]);
+    mapInstance.on("dragstart", markUserPan);
+    mapInstance.on("zoomstart", markUserPan);
+    return () => {
+      mapInstance.off("dragstart", markUserPan);
+      mapInstance.off("zoomstart", markUserPan);
+    };
+    // Solo quando cambia la geometria della traccia, non a ogni fix GPS.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mapInstance, line]);
 
   useEffect(() => {
     if (!mapInstance || startGate !== "ready" || !position) return;
-    if (pocketMode) return;
     if (!isLeafletMapUsable(mapInstance)) return;
     if (centeredOnStartRef.current) return;
-    mapInstance.stop();
-    mapInstance.flyTo(position, Math.max(mapInstance.getZoom(), 15), {
-      animate: true,
-      duration: 0.7,
-      easeLinearity: 0.2,
-    });
+    mapInstance.setView(position, Math.max(mapInstance.getZoom() || 14, 15), { animate: false });
     centeredOnStartRef.current = true;
-  }, [mapInstance, startGate, position, pocketMode]);
+  }, [mapInstance, startGate, position]);
+
+  useEffect(() => {
+    actualTrackRef.current = actualTrack;
+  }, [actualTrack]);
+
+  useEffect(() => {
+    deviationsCountRef.current = deviationsCount;
+  }, [deviationsCount]);
 
   useEffect(() => {
     if (startGate !== "ready") return;
@@ -738,7 +747,9 @@ export default function Navigation() {
       if (prev.length === 0) return [position];
       const last = prev[prev.length - 1];
       if (distanceMeters(last, position) < 8) return prev;
-      return [...prev, position];
+      // Cap memoria: tieni ultimi ~2500 punti (~20 km a 8 m)
+      const next = [...prev, position];
+      return next.length > 2500 ? next.slice(next.length - 2500) : next;
     });
   }, [position, startGate]);
 
@@ -748,22 +759,23 @@ export default function Navigation() {
     }
   }, [startGate, sessionId]);
 
+  // Sync sessione stabile: NON dipende da actualTrack (altrimenti interval si resetta ogni 8 m).
   useEffect(() => {
     if (startGate !== "ready") return;
     if (isOfflineLocalSession) return;
-    const interval = setInterval(async () => {
-      await apiFetch(`/api/sessions/${sessionId}`, {
+    const interval = setInterval(() => {
+      void apiFetch(`/api/sessions/${sessionId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           completion_pct: null,
-          deviations_count: deviationsCount,
-          actual_geom: actualTrack,
+          deviations_count: deviationsCountRef.current,
+          actual_geom: actualTrackRef.current,
         }),
-      });
+      }).catch(() => {});
     }, 10000);
     return () => clearInterval(interval);
-  }, [sessionId, deviationsCount, actualTrack, startGate, isOfflineLocalSession]);
+  }, [sessionId, startGate, isOfflineLocalSession]);
 
   function buildExitNavigationTarget() {
     const st = location.state;
@@ -1079,7 +1091,7 @@ export default function Navigation() {
             >
               <MapReadyBridge onReady={setMapInstance} />
               <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" attribution="" />
-              {showTrailLine && line.length > 1 && (
+              {line.length > 1 && (
                 <Polyline
                   positions={line}
                   pathOptions={{ color: "#2D4F1E", weight: 4, className: "pinewood-fixed-stroke" }}
@@ -1110,9 +1122,9 @@ export default function Navigation() {
         </>
 
       <AppBanner
-        message={startGate === "ready" ? offRouteBannerText : ""}
-        type="warning"
-        durationMs={0}
+        message={loadError || (startGate === "ready" ? offRouteBannerText : "")}
+        type={loadError ? "error" : "warning"}
+        durationMs={loadError ? 0 : 0}
         top="max(148px, calc(env(safe-area-inset-top) + 108px))"
         sx={{ zIndex: 3200 }}
       />
