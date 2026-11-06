@@ -1,19 +1,18 @@
 /**
  * Scarica POI OSM per tutte le trail ancora senza source=osm.
- * Uso (da server/, con Redis acceso e worker in esecuzione OPPURE inline):
- *   node scripts/backfill-pois.mjs
- *   node scripts/backfill-pois.mjs --inline   # chiama Overpass qui, senza coda
- *   node scripts/backfill-pois.mjs --limit=20
+ *
+ *   node scripts/backfill-pois.mjs --inline
+ *   node scripts/backfill-pois.mjs --inline --limit=50
+ *   node scripts/backfill-pois.mjs              # usa coda Redis (worker attivo)
  */
 import "dotenv/config";
 import { pool } from "../src/db/pool.js";
-import { poiQueue } from "../src/services/jobQueue.js";
 import { processTrailPois } from "../src/services/poiService.js";
 
 const args = process.argv.slice(2);
 const inline = args.includes("--inline");
 const limitArg = args.find((a) => a.startsWith("--limit="));
-const limit = limitArg ? Math.max(1, Number(limitArg.split("=")[1]) || 50) : 200;
+const limit = limitArg ? Math.max(1, Number(limitArg.split("=")[1]) || 50) : 500;
 
 const trails = await pool.query(
   `SELECT t.id, t.name
@@ -29,13 +28,20 @@ const trails = await pool.query(
 
 console.log(`Trail da sincronizzare: ${trails.rowCount} (inline=${inline})`);
 
+let ok = 0;
+let fail = 0;
+let inserted = 0;
+
 for (const row of trails.rows) {
   try {
     if (inline) {
       const r = await processTrailPois(row.id, { force: true });
-      console.log(`OK ${row.name}:`, r);
-      await new Promise((r) => setTimeout(r, 1500));
+      ok += 1;
+      inserted += Number(r?.inserted || 0);
+      console.log(`OK [${ok}/${trails.rowCount}] ${row.name}:`, r);
+      await new Promise((r) => setTimeout(r, 1600));
     } else {
+      const { poiQueue } = await import("../src/services/jobQueue.js");
       await poiQueue.add(
         "fetch_pois",
         { trailId: row.id, force: true },
@@ -46,15 +52,16 @@ for (const row of trails.rows) {
           removeOnFail: false,
         }
       );
+      ok += 1;
       console.log(`Queued ${row.name}`);
     }
   } catch (err) {
+    fail += 1;
     console.error(`FAIL ${row.name}:`, err.message || err);
+    await new Promise((r) => setTimeout(r, 3000));
   }
 }
 
+console.log(`Fine. ok=${ok} fail=${fail} pois_inseriti?${inserted}`);
 await pool.end();
-if (!inline) {
-  // lascia uscire il processo anche con Redis connesso
-  process.exit(0);
-}
+process.exit(fail > 0 && ok === 0 ? 1 : 0);
