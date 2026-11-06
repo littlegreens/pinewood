@@ -39,7 +39,7 @@ for (const row of trails.rows) {
       ok += 1;
       inserted += Number(r?.inserted || 0);
       console.log(`OK [${ok}/${trails.rowCount}] ${row.name}:`, r);
-      await new Promise((r) => setTimeout(r, 1600));
+      await new Promise((r) => setTimeout(r, 2800));
     } else {
       const { poiQueue } = await import("../src/services/jobQueue.js");
       await poiQueue.add(

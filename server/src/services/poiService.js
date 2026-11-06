@@ -1,11 +1,16 @@
 import { pool } from "../db/pool.js";
 
-const OVERPASS_URL = "https://overpass-api.de/api/interpreter";
+const OVERPASS_URLS = [
+  "https://overpass-api.de/api/interpreter",
+  "https://overpass.kumi.systems/api/interpreter",
+  "https://overpass.private.coffee/api/interpreter",
+];
 /** Raggio (m) dal tracciato: solo POI davvero vicino alla mappa. */
 const CORRIDOR_M = 120;
 /** Trail lunghi: pezzi da N km per non far scoppiare Overpass. */
 const CHUNK_KM = 40;
-const USER_AGENT = "PinewoodTrailApp/1.0 (poi-sync; contact@pinewood.local)";
+const USER_AGENT = "PinewoodTrailApp/1.0 (poi-sync; https://pinewood.to)";
+let overpassUrlIndex = 0;
 
 /**
  * Tag OSM ? tipi Pinewood (acqua / rifugio / belvedere).
@@ -39,19 +44,36 @@ function buildOverpassQuery(south, west, north, east) {
 }
 
 async function fetchOverpass(query) {
-  const res = await fetch(OVERPASS_URL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
-      "User-Agent": USER_AGENT,
-    },
-    body: `data=${encodeURIComponent(query)}`,
-  });
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(`Overpass HTTP ${res.status}: ${text.slice(0, 200)}`);
+  let lastErr = null;
+  for (let attempt = 0; attempt < OVERPASS_URLS.length * 2; attempt += 1) {
+    const url = OVERPASS_URLS[overpassUrlIndex % OVERPASS_URLS.length];
+    overpassUrlIndex += 1;
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+          "User-Agent": USER_AGENT,
+        },
+        body: `data=${encodeURIComponent(query)}`,
+      });
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        lastErr = new Error(`Overpass HTTP ${res.status}: ${text.slice(0, 160)}`);
+        // 429/502/504: ruota mirror e aspetta
+        if (res.status === 429 || res.status === 502 || res.status === 503 || res.status === 504) {
+          await sleep(2500 + attempt * 1500);
+          continue;
+        }
+        throw lastErr;
+      }
+      return res.json();
+    } catch (err) {
+      lastErr = err instanceof Error ? err : new Error(String(err));
+      await sleep(2000 + attempt * 1000);
+    }
   }
-  return res.json();
+  throw lastErr || new Error("Overpass non raggiungibile");
 }
 
 function classifyElement(tags = {}) {
