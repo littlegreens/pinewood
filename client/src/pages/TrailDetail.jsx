@@ -416,24 +416,18 @@ export default function TrailDetail() {
 
   useEffect(() => {
     if (!mapExpanded) return;
-    let cancelled = false;
-    const run = () => {
-      if (cancelled) return;
-      const el = mapSectionRef.current;
-      if (!el) return;
-      const header = document.querySelector("header.MuiAppBar-root");
-      const headerH = header?.getBoundingClientRect().height ?? 56;
-      const rect = el.getBoundingClientRect();
-      const targetY = rect.top + window.scrollY - headerH;
-      if (Math.abs(targetY - window.scrollY) < 3) return;
-      window.scrollTo({ top: Math.max(0, targetY), behavior: "smooth" });
-    };
-    const id = requestAnimationFrame(() => {
-      requestAnimationFrame(run);
-    });
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const id = window.setTimeout(() => {
+      try {
+        trailMapRef.current?.invalidateSize?.({ animate: false });
+      } catch {
+        /* ignore */
+      }
+    }, 80);
     return () => {
-      cancelled = true;
-      cancelAnimationFrame(id);
+      document.body.style.overflow = prev;
+      window.clearTimeout(id);
     };
   }, [mapExpanded]);
 
@@ -970,16 +964,29 @@ export default function TrailDetail() {
       </PageContainer>
       <Box
         ref={mapSectionRef}
-        sx={{
-          width: "100%",
-          height: mapExpanded
-            ? { xs: "min(67vh, calc(100vh - 120px))", md: "min(55vh, 520px)" }
-            : { xs: 260, md: 380 },
-          overflow: "hidden",
-          position: "relative",
-          transition: "height 260ms ease",
-        }}
+        sx={
+          mapExpanded
+            ? {
+                position: "fixed",
+                inset: 0,
+                zIndex: 1400,
+                width: "100%",
+                height: "100dvh",
+                maxHeight: "100dvh",
+                display: "flex",
+                flexDirection: "column",
+                bgcolor: "#0f2517",
+                overflow: "hidden",
+              }
+            : {
+                width: "100%",
+                height: { xs: 260, md: 380 },
+                overflow: "hidden",
+                position: "relative",
+              }
+        }
       >
+            <Box sx={{ position: "relative", flex: mapExpanded ? 1 : undefined, height: mapExpanded ? undefined : "100%", minHeight: 0 }}>
             <MapContainer
               center={mapCenter}
               zoom={13}
@@ -1002,7 +1009,9 @@ export default function TrailDetail() {
               )}
               {line.length > 0 && (
                 <CircleMarker center={line[0]} radius={6} pathOptions={{ color: "#4a8c5c", fillOpacity: 1 }}>
-                  <Popup>{t(lang, "startPoint")}</Popup>
+                  <Popup closeButton={false} className="pinewood-poi-popup">
+                    <div className="pinewood-poi-popup__title">{t(lang, "startPoint")}</div>
+                  </Popup>
                 </CircleMarker>
               )}
               {line.length > 0 && (
@@ -1011,14 +1020,16 @@ export default function TrailDetail() {
                   radius={6}
                   pathOptions={{ color: "#c9a84c", fillOpacity: 1 }}
                 >
-                  <Popup>End</Popup>
+                  <Popup closeButton={false} className="pinewood-poi-popup">
+                    <div className="pinewood-poi-popup__title">Arrivo</div>
+                  </Popup>
                 </CircleMarker>
               )}
               {(trail.parkings || []).map((parking) =>
                 parking.lat != null && parking.lon != null ? (
                   <Marker key={parking.id} position={[parking.lat, parking.lon]}>
-                    <Popup>
-                      <strong>P</strong> {parking.label}
+                    <Popup closeButton={false} className="pinewood-poi-popup">
+                      <div className="pinewood-poi-popup__title">{parking.label || "P"}</div>
                     </Popup>
                   </Marker>
                 ) : null
@@ -1074,95 +1085,104 @@ export default function TrailDetail() {
                 sx={{ width: 20, height: 20, opacity: 1, display: "block", filter: "brightness(0)" }}
               />
             </Button>
+            </Box>
+
+            {mapExpanded && hasElevationProfile && (
+              <Box
+                sx={{
+                  flexShrink: 0,
+                  height: 118,
+                  px: 1.2,
+                  pt: 0.6,
+                  pb: "max(8px, env(safe-area-inset-bottom))",
+                  bgcolor: "#0f2517",
+                }}
+              >
+                {(() => {
+                  const width = 500;
+                  const height = 96;
+                  const pad = 8;
+                  const path = buildElevationProfilePath(elevationProfile, width, height, pad);
+                  const onPointer = (clientX, target) => {
+                    const rect = target.getBoundingClientRect();
+                    const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / Math.max(1, rect.width)));
+                    setProfileScrubX(pad + ratio * (width - pad * 2));
+                    const dist = path.minD + ratio * path.spanD;
+                    let best = elevationProfile[0];
+                    let bestDiff = Infinity;
+                    for (const p of elevationProfile) {
+                      const d = Math.abs((p.distance_m ?? 0) - dist);
+                      if (d < bestDiff) {
+                        bestDiff = d;
+                        best = p;
+                      }
+                    }
+                    if (line.length >= 2) {
+                      let acc = 0;
+                      const targetM = best.distance_m ?? dist;
+                      for (let i = 1; i < line.length; i += 1) {
+                        const a = line[i - 1];
+                        const b = line[i];
+                        const seg =
+                          111320 *
+                          Math.sqrt(
+                            (b[0] - a[0]) ** 2 +
+                              ((b[1] - a[1]) * Math.cos((a[0] * Math.PI) / 180)) ** 2
+                          );
+                        if (acc + seg >= targetM || i === line.length - 1) {
+                          const tt = seg > 0 ? Math.max(0, Math.min(1, (targetM - acc) / seg)) : 0;
+                          const lat = a[0] + (b[0] - a[0]) * tt;
+                          const lon = a[1] + (b[1] - a[1]) * tt;
+                          setProfileCursor([lat, lon]);
+                          const map = trailMapRef.current;
+                          if (map) map.panTo([lat, lon], { animate: false });
+                          break;
+                        }
+                        acc += seg;
+                      }
+                    }
+                  };
+                  return (
+                    <Box
+                      sx={{ touchAction: "none", userSelect: "none", height: "100%" }}
+                      onPointerDown={(e) => {
+                        e.currentTarget.setPointerCapture?.(e.pointerId);
+                        onPointer(e.clientX, e.currentTarget);
+                      }}
+                      onPointerMove={(e) => {
+                        if (e.buttons === 0) return;
+                        onPointer(e.clientX, e.currentTarget);
+                      }}
+                    >
+                      <svg viewBox={`0 0 ${width} ${height}`} width="100%" height="100%" role="img">
+                        <path d={path.d} fill="none" stroke="#ffffff" strokeWidth="2.4" strokeLinecap="round" />
+                        <text x="6" y={height - 4} fontSize="11" fill="#dfe8df">
+                          {path.minE}m
+                        </text>
+                        <text x={width - 48} y="14" fontSize="11" fill="#dfe8df">
+                          {path.maxE}m
+                        </text>
+                        {profileScrubX != null && (
+                          <line
+                            x1={profileScrubX}
+                            x2={profileScrubX}
+                            y1={6}
+                            y2={height - 6}
+                            stroke="#e8c85c"
+                            strokeWidth="2"
+                            strokeDasharray="4 4"
+                          />
+                        )}
+                      </svg>
+                    </Box>
+                  );
+                })()}
+              </Box>
+            )}
       </Box>
 
+      {!mapExpanded && (
       <Box sx={{ width: "100%", bgcolor: "#0f2517", pt: "24px", pb: "24px", mt: 0, mb: "9.6px" }}>
-          {mapExpanded && hasElevationProfile ? (
-            <Box sx={{ px: 1.2 }}>
-              <Typography sx={{ color: "#fff", fontWeight: 700, fontSize: "0.95rem", mb: 0.8, px: 0.4 }}>
-                Profilo altimetrico — scorri per vedere il punto sulla mappa
-              </Typography>
-              {(() => {
-                const width = 500;
-                const height = 130;
-                const pad = 10;
-                const path = buildElevationProfilePath(elevationProfile, width, height, pad);
-                const onPointer = (clientX, target) => {
-                  const rect = target.getBoundingClientRect();
-                  const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / Math.max(1, rect.width)));
-                  setProfileScrubX(pad + ratio * (width - pad * 2));
-                  const dist = path.minD + ratio * path.spanD;
-                  let best = elevationProfile[0];
-                  let bestDiff = Infinity;
-                  for (const p of elevationProfile) {
-                    const d = Math.abs((p.distance_m ?? 0) - dist);
-                    if (d < bestDiff) {
-                      bestDiff = d;
-                      best = p;
-                    }
-                  }
-                  if (line.length >= 2) {
-                    let acc = 0;
-                    const targetM = best.distance_m ?? dist;
-                    for (let i = 1; i < line.length; i += 1) {
-                      const a = line[i - 1];
-                      const b = line[i];
-                      const seg =
-                        111320 *
-                        Math.sqrt(
-                          (b[0] - a[0]) ** 2 +
-                            ((b[1] - a[1]) * Math.cos((a[0] * Math.PI) / 180)) ** 2
-                        );
-                      if (acc + seg >= targetM || i === line.length - 1) {
-                        const tt = seg > 0 ? Math.max(0, Math.min(1, (targetM - acc) / seg)) : 0;
-                        const lat = a[0] + (b[0] - a[0]) * tt;
-                        const lon = a[1] + (b[1] - a[1]) * tt;
-                        setProfileCursor([lat, lon]);
-                        const map = trailMapRef.current;
-                        if (map) map.panTo([lat, lon], { animate: false });
-                        break;
-                      }
-                      acc += seg;
-                    }
-                  }
-                };
-                return (
-                  <Box
-                    sx={{ touchAction: "none", userSelect: "none" }}
-                    onPointerDown={(e) => {
-                      e.currentTarget.setPointerCapture?.(e.pointerId);
-                      onPointer(e.clientX, e.currentTarget);
-                    }}
-                    onPointerMove={(e) => {
-                      if (e.buttons === 0) return;
-                      onPointer(e.clientX, e.currentTarget);
-                    }}
-                  >
-                    <svg viewBox={`0 0 ${width} ${height}`} width="100%" height={height} role="img">
-                      <path d={path.d} fill="none" stroke="#ffffff" strokeWidth="2.4" strokeLinecap="round" />
-                      <text x="6" y={height - 4} fontSize="11" fill="#dfe8df">
-                        {path.minE}m
-                      </text>
-                      <text x={width - 48} y="14" fontSize="11" fill="#dfe8df">
-                        {path.maxE}m
-                      </text>
-                      {profileScrubX != null && (
-                        <line
-                          x1={profileScrubX}
-                          x2={profileScrubX}
-                          y1={8}
-                          y2={height - 8}
-                          stroke="#e8c85c"
-                          strokeWidth="2"
-                          strokeDasharray="4 4"
-                        />
-                      )}
-                    </svg>
-                  </Box>
-                );
-              })()}
-            </Box>
-          ) : (
           <Stack spacing={0.9}>
             <Box sx={{ px: 1.6, pb: 0.2 }}>
               <TrailEngagementStats
@@ -1226,8 +1246,8 @@ export default function TrailDetail() {
               </Stack>
             )}
           </Stack>
-          )}
       </Box>
+      )}
 
       <PageContainer sx={{ pb: { xs: 6, md: 8 } }}>
         <Stack spacing={2}>

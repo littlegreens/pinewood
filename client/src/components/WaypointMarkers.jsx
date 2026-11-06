@@ -16,7 +16,15 @@ export default function WaypointMarkers({ waypoints = [] }) {
     const title = wp.label || (lang === "en" ? meta.labelEn : meta.labelIt);
     return (
       <Marker key={wp.id || `${typeId}-${pos[0]}-${pos[1]}`} position={pos} icon={icon}>
-        <Popup>{title}</Popup>
+        <Popup
+          closeButton={false}
+          autoClose
+          closeOnClick
+          className="pinewood-poi-popup"
+          offset={[0, -6]}
+        >
+          <div className="pinewood-poi-popup__title">{title}</div>
+        </Popup>
       </Marker>
     );
   });
