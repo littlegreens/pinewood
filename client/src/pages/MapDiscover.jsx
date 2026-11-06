@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Box, Button, Chip, IconButton, InputAdornment, Paper, Stack, TextField, Typography } from "@mui/material";
+import { Box, Button, Chip, CircularProgress, IconButton, InputAdornment, Paper, Stack, TextField, Typography } from "@mui/material";
 import MyLocationRoundedIcon from "@mui/icons-material/MyLocationRounded";
 import CloseRoundedIcon from "@mui/icons-material/CloseRounded";
 import SearchIcon from "@mui/icons-material/Search";
@@ -24,23 +24,27 @@ const DISCOVER_FLY_OUT = 0.45;
 const MAP_OVERLAY_ZINDEX = 1200;
 const API = import.meta.env.VITE_API_URL || "";
 
-function FitAllPoints({ points }) {
+function FitAllPoints({ points, enabled = true }) {
   const map = useMap();
+  const doneRef = useRef(false);
   useEffect(() => {
+    if (!enabled || doneRef.current) return;
     if (!Array.isArray(points) || points.length === 0) return;
+    doneRef.current = true;
     if (points.length === 1) {
       map.setView([points[0].lat, points[0].lon], 13, { animate: false });
       return;
     }
     const bounds = L.latLngBounds(points.map((p) => [p.lat, p.lon]));
     map.fitBounds(bounds, { padding: [30, 30], maxZoom: 13, animate: false });
-  }, [map, points]);
+  }, [map, points, enabled]);
   return null;
 }
 
 function ClusterLayer({ points, onRevealTrail, onClusterClickStart, clusterGroupRef }) {
   const map = useMap();
   const clusterLayerRef = useRef(null);
+  const knownIdsRef = useRef(new Set());
   const onRevealTrailRef = useRef(onRevealTrail);
 
   useEffect(() => {
@@ -56,6 +60,9 @@ function ClusterLayer({ points, onRevealTrail, onClusterClickStart, clusterGroup
       maxClusterRadius: 52,
       animate: false,
       animateAddingMarkers: false,
+      chunkedLoading: true,
+      chunkInterval: 40,
+      chunkDelay: 20,
       iconCreateFunction(cluster) {
         return L.divIcon({
           className: "pinewood-cluster-icon",
@@ -65,16 +72,18 @@ function ClusterLayer({ points, onRevealTrail, onClusterClickStart, clusterGroup
         });
       },
     });
-    group.on("clusterclick", (event) => {
+    group.on("clusterclick", () => {
       onClusterClickStart?.();
     });
     clusterLayerRef.current = group;
+    knownIdsRef.current = new Set();
     if (clusterGroupRef) clusterGroupRef.current = group;
     map.addLayer(group);
     return () => {
       group.off("clusterclick");
       map.removeLayer(group);
       clusterLayerRef.current = null;
+      knownIdsRef.current = new Set();
       if (clusterGroupRef) clusterGroupRef.current = null;
     };
   }, [map, clusterGroupRef]);
@@ -82,9 +91,18 @@ function ClusterLayer({ points, onRevealTrail, onClusterClickStart, clusterGroup
   useEffect(() => {
     const group = clusterLayerRef.current;
     if (!group) return;
-    group.clearLayers();
+    const known = knownIdsRef.current;
+    const nextIds = new Set(points.map((p) => p.id));
+
+    // Rimozione solo se la lista si restringe (filtro/ricerca), altrimenti append.
+    if (known.size && [...known].some((id) => !nextIds.has(id))) {
+      group.clearLayers();
+      known.clear();
+    }
 
     for (const trail of points) {
+      if (known.has(trail.id)) continue;
+      known.add(trail.id);
       const marker = L.marker([trail.lat, trail.lon], {
         icon: L.divIcon({
           className: "pinewood-point-icon",
@@ -152,10 +170,15 @@ async function geocode(text) {
   }
 }
 
+const DISCOVER_FIRST_BATCH = 40;
+const DISCOVER_BATCH_SIZE = 60;
+
 export default function MapDiscover() {
   const navigate = useNavigate();
   const [query, setQuery] = useState("");
   const [items, setItems] = useState([]);
+  const [loadingTrails, setLoadingTrails] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [notice, setNotice] = useState("");
   const [geoResult, setGeoResult] = useState(null);
   const debounceRef = useRef(null);
@@ -164,36 +187,62 @@ export default function MapDiscover() {
 
   useEffect(() => {
     let active = true;
+    let progressiveTimer = 0;
     async function load() {
-      const res = await apiFetch("/api/trails/discover");
-      if (!res.ok) {
-        if (active) setNotice("Errore caricamento mappa.");
-        return;
+      setLoadingTrails(true);
+      setLoadingMore(false);
+      try {
+        const res = await apiFetch("/api/trails/discover?light=1");
+        if (!res.ok) {
+          if (active) setNotice("Errore caricamento mappa.");
+          return;
+        }
+        const data = await res.json();
+        if (!active) return;
+        const points = (Array.isArray(data) ? data : [])
+          .filter((t) => Number.isFinite(Number(t.start_lat)) && Number.isFinite(Number(t.start_lon)))
+          .map((t) => ({
+            id: t.id,
+            name: t.name,
+            distance_km: t.distance_km,
+            estimated_time_minutes: t.estimated_time_minutes,
+            difficulty: t.difficulty,
+            elevation_gain_m: t.elevation_gain_m,
+            elevation_loss_m: t.elevation_loss_m,
+            max_elevation_m: t.max_elevation_m,
+            min_elevation_m: t.min_elevation_m,
+            owner_name: t.owner_name,
+            owner_avatar_url: t.owner_avatar_url,
+            lat: Number(t.start_lat),
+            lon: Number(t.start_lon),
+          }));
+        // Prima batch subito, resto a rate per non congelare markercluster.
+        const first = points.slice(0, DISCOVER_FIRST_BATCH);
+        setItems(first);
+        setLoadingTrails(false);
+        if (points.length <= first.length) return;
+        setLoadingMore(true);
+        let offset = first.length;
+        const pump = () => {
+          if (!active) return;
+          const next = points.slice(0, offset + DISCOVER_BATCH_SIZE);
+          offset = next.length;
+          setItems(next);
+          if (offset < points.length) {
+            progressiveTimer = window.setTimeout(pump, 48);
+          } else {
+            setLoadingMore(false);
+          }
+        };
+        progressiveTimer = window.setTimeout(pump, 48);
+      } finally {
+        if (active) setLoadingTrails(false);
       }
-      const data = await res.json();
-      if (!active) return;
-      const points = (Array.isArray(data) ? data : [])
-        .filter((t) => Number.isFinite(Number(t.start_lat)) && Number.isFinite(Number(t.start_lon)))
-        .map((t) => ({
-          id: t.id,
-          name: t.name,
-          distance_km: t.distance_km,
-          estimated_time_minutes: t.estimated_time_minutes,
-          difficulty: t.difficulty,
-          elevation_gain_m: t.elevation_gain_m,
-          elevation_loss_m: t.elevation_loss_m,
-          max_elevation_m: t.max_elevation_m,
-          min_elevation_m: t.min_elevation_m,
-          owner_name: t.owner_name,
-          owner_avatar_url: t.owner_avatar_url,
-          lat: Number(t.start_lat),
-          lon: Number(t.start_lon),
-        }));
-      setItems(points);
     }
     load();
     return () => {
       active = false;
+      if (progressiveTimer) window.clearTimeout(progressiveTimer);
     };
   }, []);
 
@@ -431,7 +480,7 @@ export default function MapDiscover() {
             url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
           />
           <LocateControl onLocate={locateAction} />
-          <FitAllPoints points={items} />
+          <FitAllPoints points={items} enabled={!loadingTrails && items.length > 0} />
           <ClusterLayer
             points={filteredPoints}
             onRevealTrail={revealTrailOnMap}
@@ -445,6 +494,32 @@ export default function MapDiscover() {
             />
           )}
         </MapContainer>
+        {(loadingTrails || loadingMore) && (
+          <Box
+            sx={{
+              position: "absolute",
+              top: 64,
+              left: "50%",
+              transform: "translateX(-50%)",
+              zIndex: MAP_OVERLAY_ZINDEX + 1,
+              pointerEvents: "none",
+              display: "flex",
+              alignItems: "center",
+              gap: 1,
+              bgcolor: "rgba(255,255,255,0.92)",
+              border: "1px solid #e5e7eb",
+              borderRadius: 99,
+              px: 1.5,
+              py: 0.7,
+              boxShadow: "0 2px 10px rgba(0,0,0,0.12)",
+            }}
+          >
+            <CircularProgress size={16} thickness={5} sx={{ color: "#2d4f1e" }} />
+            <Typography variant="caption" sx={{ fontWeight: 700, color: "#1f2937", whiteSpace: "nowrap" }}>
+              {loadingTrails ? "Caricamento percorsi…" : "Carico altri percorsi…"}
+            </Typography>
+          </Box>
+        )}
         <Box
           sx={{
             position: "absolute",

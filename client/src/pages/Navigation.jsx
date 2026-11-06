@@ -25,15 +25,18 @@ import { buildElevationProfilePath as buildElevationProfilePathBase } from "../u
 
 const OFF_ROUTE_VIBRATE_PULSE_MS = 900;
 const NAV_RUNTIME_STATE_KEY_PREFIX = "pinewood_nav_runtime_";
-/** Soglia ortogonale minima dal tracciato (m). ~30 m: più reattivo del precedente 50 m; uscita più stretta per isteresi. */
-const OFF_ROUTE_ENTER_M = 32;
-const OFF_ROUTE_EXIT_M = 24;
-const OFF_ROUTE_ENTER_DELAY_MS = 5000;
-const OFF_ROUTE_EXIT_DELAY_MS = 3000;
+/** Fuori traccia: lascia margine ampio (GPS + sentiero largo). */
+const OFF_ROUTE_ENTER_M = 60;
+const OFF_ROUTE_EXIT_M = 42;
+const OFF_ROUTE_ENTER_DELAY_MS = 6000;
+const OFF_ROUTE_EXIT_DELAY_MS = 3500;
 const GPS_MAX_ACCURACY_TRUST_M = 55;
-const OFF_ROUTE_ENTER_MIN_SAMPLES = 2;
-/** Aggiorna heading in React solo sopra questa soglia (°) per meno re-render / icon Leaflet. */
-const HEADING_PUBLISH_MIN_DELTA_DEG = 2;
+const OFF_ROUTE_ENTER_MIN_SAMPLES = 3;
+/** Aggiorna heading in React solo sopra questa soglia (°) → meno scatti sulla mappa. */
+const HEADING_PUBLISH_MIN_DELTA_DEG = 4;
+/** Posizione mappa: non ogni fix GPS. */
+const POS_PUBLISH_MIN_M = 5;
+const POS_PUBLISH_MIN_MS = 350;
 /** Sotto ~1.5 km/h: bussola magnetica; sopra: GPS bearing di movimento. */
 const COMPASS_MAX_SPEED_MS = 1.5 / 3.6;
 
@@ -84,16 +87,25 @@ const USER_MARKER_ICON = L.divIcon({
   iconAnchor: [20, 20],
 });
 
-/** Freccia stabile: ruota via DOM, senza ricreare DivIcon a ogni grado. */
-function NavigationUserMarker({ position, headingDeg }) {
+/**
+ * Freccia stabile via DOM.
+ * Track-up (compassOn): tip sempre in alto = direzione di marcia (mappa già ruotata).
+ * Nord-up: tip = heading assoluto.
+ * Dipende da headingDeg anche in track-up per riapplicare a ogni fix (evita freccia “congelata”).
+ */
+function NavigationUserMarker({ position, headingDeg, compassOn = false }) {
   const markerRef = useRef(null);
   useEffect(() => {
     const el = markerRef.current?.getElement?.();
     const rot = el?.querySelector?.(".pinewood-nav-user-rot");
     if (!rot) return;
-    const deg = typeof headingDeg === "number" && !Number.isNaN(headingDeg) ? headingDeg : 0;
+    const deg = compassOn
+      ? 0
+      : typeof headingDeg === "number" && !Number.isNaN(headingDeg)
+        ? headingDeg
+        : 0;
     rot.style.transform = `rotate(${deg}deg)`;
-  }, [headingDeg]);
+  }, [headingDeg, compassOn, position]);
   return <Marker ref={markerRef} position={position} icon={USER_MARKER_ICON} />;
 }
 
@@ -157,6 +169,9 @@ export default function Navigation() {
   const pendingOnRouteSinceRef = useRef(null);
   const centeredOnStartRef = useRef(false);
   const userPannedRef = useRef(false);
+  const followPanAtRef = useRef(0);
+  const lastPositionPublishAtRef = useRef(0);
+  const lastPublishedPosRef = useRef(null);
   const actualTrackRef = useRef([]);
   const deviationsCountRef = useRef(0);
   const [loadError, setLoadError] = useState("");
@@ -255,6 +270,7 @@ export default function Navigation() {
     });
     let watchId;
     let cancelled = false;
+    let orientationAttached = false;
     prevPosRef.current = null;
     lastHeadingRef.current = null;
     publishedHeadingRef.current = null;
@@ -262,12 +278,24 @@ export default function Navigation() {
     lastSpeedRef.current = null;
     setUserHeading(null);
 
+    function publishHeading(h) {
+      if (typeof h !== "number" || Number.isNaN(h)) {
+        publishedHeadingRef.current = null;
+        setUserHeading(h);
+        return;
+      }
+      const pub = publishedHeadingRef.current;
+      if (pub == null || Math.abs(shortestAngleDeltaDeg(pub, h)) >= HEADING_PUBLISH_MIN_DELTA_DEG) {
+        publishedHeadingRef.current = h;
+        setUserHeading(h);
+      }
+    }
+
     function onDeviceOrientation(ev) {
       let compass = null;
       if (typeof ev.webkitCompassHeading === "number" && !Number.isNaN(ev.webkitCompassHeading)) {
         compass = ev.webkitCompassHeading;
       } else if (typeof ev.alpha === "number" && !Number.isNaN(ev.alpha)) {
-        // absolute / standard: 0 = nord; alpha è clockwise da nord in absolute
         compass = (360 - ev.alpha + 360) % 360;
       }
       if (compass == null) return;
@@ -278,14 +306,9 @@ export default function Navigation() {
       if (movingFast) return;
       const smoothed = smoothHeadingDeg(lastHeadingRef.current, compass);
       lastHeadingRef.current = smoothed;
-      const pub = publishedHeadingRef.current;
-      if (pub == null || Math.abs(shortestAngleDeltaDeg(pub, smoothed)) >= HEADING_PUBLISH_MIN_DELTA_DEG) {
-        publishedHeadingRef.current = smoothed;
-        setUserHeading(smoothed);
-      }
+      publishHeading(smoothed);
     }
 
-    let orientationAttached = false;
     async function attachCompass() {
       try {
         const DOE = window.DeviceOrientationEvent;
@@ -296,6 +319,7 @@ export default function Navigation() {
       } catch {
         return;
       }
+      if (cancelled || orientationAttached) return;
       const absEvt = "ondeviceorientationabsolute" in window ? "deviceorientationabsolute" : "deviceorientation";
       window.addEventListener(absEvt, onDeviceOrientation, true);
       orientationAttached = absEvt;
@@ -391,20 +415,19 @@ export default function Navigation() {
             h = smoothed;
           }
           prevPosRef.current = pos;
-          setPosition(pos);
-          if (typeof h === "number" && !Number.isNaN(h)) {
-            const pub = publishedHeadingRef.current;
-            if (pub == null || Math.abs(shortestAngleDeltaDeg(pub, h)) >= HEADING_PUBLISH_MIN_DELTA_DEG) {
-              publishedHeadingRef.current = h;
-              setUserHeading(h);
-            }
-          } else {
-            publishedHeadingRef.current = null;
-            setUserHeading(h);
+          const nowTs = Date.now();
+          const movedEnough =
+            !lastPublishedPosRef.current ||
+            distanceMeters(lastPublishedPosRef.current, pos) >= POS_PUBLISH_MIN_M;
+          if (movedEnough || nowTs - (lastPositionPublishAtRef.current || 0) >= POS_PUBLISH_MIN_MS) {
+            lastPositionPublishAtRef.current = nowTs;
+            lastPublishedPosRef.current = pos;
+            setPosition(pos);
           }
+          publishHeading(h);
         },
         () => {},
-        { enableHighAccuracy: true, maximumAge: 0, timeout: 10_000 }
+        { enableHighAccuracy: true, maximumAge: 1000, timeout: 12_000 }
       );
     }
     load();
@@ -460,14 +483,17 @@ export default function Navigation() {
 
   const offRouteBannerText = useMemo(() => {
     if (!isOffRoute || !trailProjection) return "";
-    const meters = Math.max(1, Math.round(trailProjection.minSegDist));
+    // Arrotonda a 5 m: meno re-render del banner mentre cammini fuori traccia.
+    const meters = Math.max(5, Math.round(trailProjection.minSegDist / 5) * 5);
     return t(lang, "navOffRouteAlertMeters").replace("{m}", String(meters));
   }, [isOffRoute, trailProjection, lang]);
 
   useEffect(() => {
     if (!trailProjection) return;
     const { minSegDist, bestAlong } = trailProjection;
-    setUserDistanceM(bestAlong);
+    setUserDistanceM((prev) =>
+      prev != null && Math.abs(prev - bestAlong) < 8 ? prev : bestAlong
+    );
     const now = Date.now();
     const currentlyOff = wasOffRouteRef.current;
     const accuracy = positionAccuracyRef.current;
@@ -479,7 +505,8 @@ export default function Navigation() {
         lastOffRoutePulseAtRef.current = now;
         vibrateOffRoutePulse();
       }
-      setIsOffRoute(true);
+      // Evita setState a ogni fix GPS se già off-route (blocca la mappa).
+      if (!currentlyOff) setIsOffRoute(true);
     };
 
     if (!gpsTrustworthy) {
@@ -523,7 +550,7 @@ export default function Navigation() {
     } else {
       offRouteEnterSamplesRef.current = 0;
       pendingOffRouteSinceRef.current = null;
-      setIsOffRoute(false);
+      // Non chiamare setState se già on-route (evita scatti/freeze).
     }
   }, [trailProjection, lang]);
 
@@ -618,22 +645,29 @@ export default function Navigation() {
 
   useEffect(() => {
     if (!runtimeHydratedRef.current) return;
-    const snapshot = {
-      deviationsCount,
-      actualTrack,
-      isOffRoute,
-      userDistanceM,
-      userHeading,
-      startGate,
-      pocketMode,
-      chromeUnlocked,
-      updatedAt: Date.now(),
+    const key = navRuntimeStateKey();
+    const write = () => {
+      const snapshot = {
+        deviationsCount,
+        actualTrack: actualTrackRef.current,
+        isOffRoute,
+        userDistanceM,
+        userHeading,
+        startGate,
+        pocketMode,
+        chromeUnlocked,
+        updatedAt: Date.now(),
+      };
+      try {
+        sessionStorage.setItem(key, JSON.stringify(snapshot));
+      } catch {
+        /* ignore quota/storage issues */
+      }
     };
-    try {
-      sessionStorage.setItem(navRuntimeStateKey(), JSON.stringify(snapshot));
-    } catch {
-      /* ignore quota/storage issues */
-    }
+    // Heading cambia spesso: debounce per non bloccare il main thread / mappa.
+    const delay = userHeading != null ? 400 : 0;
+    const t = setTimeout(write, delay);
+    return () => clearTimeout(t);
   }, [
     sessionId,
     deviationsCount,
@@ -738,6 +772,37 @@ export default function Navigation() {
     centeredOnStartRef.current = true;
   }, [mapInstance, startGate, position]);
 
+  // Accensione bussola: un solo ricentra. Niente pan continuo (era la causa degli scatti).
+  useEffect(() => {
+    if (!compassOn || !mapInstance || !position) return;
+    if (!isLeafletMapUsable(mapInstance)) return;
+    userPannedRef.current = false;
+    try {
+      mapInstance.setView(position, Math.max(mapInstance.getZoom() || 14, 15), { animate: false });
+    } catch {
+      /* ignore */
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [compassOn]);
+
+  // Track-up: segui solo se ti sei mosso davvero (>18 m dal centro mappa), max ~0.5 Hz.
+  useEffect(() => {
+    if (!compassOn || !mapInstance || startGate !== "ready" || !position) return;
+    if (!isLeafletMapUsable(mapInstance)) return;
+    if (userPannedRef.current) return;
+    const now = Date.now();
+    if (now - (followPanAtRef.current || 0) < 1800) return;
+    try {
+      const center = mapInstance.getCenter();
+      const dist = distanceMeters([center.lat, center.lng], position);
+      if (dist < 18) return;
+      followPanAtRef.current = now;
+      mapInstance.panTo(position, { animate: false });
+    } catch {
+      /* ignore */
+    }
+  }, [compassOn, mapInstance, startGate, position]);
+
   useEffect(() => {
     actualTrackRef.current = actualTrack;
   }, [actualTrack]);
@@ -822,12 +887,9 @@ export default function Navigation() {
     if (!isLeafletMapUsable(mapInstance)) return;
     const target = position || (await requestQuickLocation({ timeoutMs: 3500 }));
     if (!target) return;
+    userPannedRef.current = false;
     mapInstance.stop();
-    mapInstance.flyTo(target, Math.max(mapInstance.getZoom(), 15), {
-      animate: true,
-      duration: 0.65,
-      easeLinearity: 0.2,
-    });
+    mapInstance.setView(target, Math.max(mapInstance.getZoom(), 15), { animate: false });
   }
 
   function onMapClickZoom(latlng) {
@@ -1137,7 +1199,6 @@ export default function Navigation() {
                 headingDeg={userHeading}
                 manualBearing={manualBearing}
                 onManualBearingChange={onManualBearingChange}
-                pivotLatLng={position}
               />
               <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" attribution="" />
               {line.length > 1 && (
@@ -1168,7 +1229,8 @@ export default function Navigation() {
               {position && (
                 <NavigationUserMarker
                   position={position}
-                  headingDeg={compassOn ? 0 : userHeading}
+                  headingDeg={userHeading}
+                  compassOn={compassOn}
                 />
               )}
             </MapContainer>

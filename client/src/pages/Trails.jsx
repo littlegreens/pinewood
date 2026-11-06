@@ -3,6 +3,7 @@ import {
   Box,
   Button,
   Chip,
+  CircularProgress,
   InputAdornment,
   Stack,
   TextField,
@@ -56,6 +57,7 @@ export default function Trails() {
   const lang = useMemo(() => detectLanguage(), []);
   const [query, setQuery] = useState("");
   const [items, setItems] = useState([]);
+  const [loadingTrails, setLoadingTrails] = useState(false);
   const [myPos, setMyPos] = useState(null);
   const [locationResolved, setLocationResolved] = useState(false);
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
@@ -87,24 +89,46 @@ export default function Trails() {
     if (!locationResolved || loadedOnce.current) return;
     loadedOnce.current = true;
     let active = true;
+    let progressiveTimer = 0;
     async function loadTrails() {
-      const qs = new URLSearchParams();
-      qs.set("sort", "near");
-      if (myPos) {
-        qs.set("lat", String(myPos[0]));
-        qs.set("lon", String(myPos[1]));
+      setLoadingTrails(true);
+      try {
+        const qs = new URLSearchParams();
+        qs.set("sort", "near");
+        if (myPos) {
+          qs.set("lat", String(myPos[0]));
+          qs.set("lon", String(myPos[1]));
+        }
+        const res = await apiFetch(`/api/trails/discover?${qs.toString()}`);
+        if (res.status === 401) {
+          navigate("/");
+          return;
+        }
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!active || !Array.isArray(data)) return;
+        // Mostra subito la prima pagina, poi il resto a raffiche per non bloccare lo scroll.
+        const first = data.slice(0, PAGE_SIZE);
+        setItems(first);
+        setLoadingTrails(false);
+        if (data.length <= first.length) return;
+        let offset = first.length;
+        const pump = () => {
+          if (!active) return;
+          offset = Math.min(data.length, offset + PAGE_SIZE * 2);
+          setItems(data.slice(0, offset));
+          if (offset < data.length) progressiveTimer = window.setTimeout(pump, 40);
+        };
+        progressiveTimer = window.setTimeout(pump, 40);
+      } finally {
+        if (active) setLoadingTrails(false);
       }
-      const res = await apiFetch(`/api/trails/discover?${qs.toString()}`);
-      if (res.status === 401) {
-        navigate("/");
-        return;
-      }
-      if (!res.ok) return;
-      const data = await res.json();
-      if (active) setItems(data);
     }
     loadTrails();
-    return () => { active = false; };
+    return () => {
+      active = false;
+      if (progressiveTimer) window.clearTimeout(progressiveTimer);
+    };
   }, [lang, navigate, myPos, locationResolved]);
 
   useEffect(() => {
@@ -297,7 +321,11 @@ export default function Trails() {
 
           <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 1 }}>
             <Typography variant="caption" color="text.secondary">
-              {results.length} {lang === "it" ? "tracciati" : "trails"}
+              {loadingTrails
+                ? lang === "it"
+                  ? "Caricamento…"
+                  : "Loading…"
+                : `${results.length} ${lang === "it" ? "tracciati" : "trails"}`}
             </Typography>
 
             {geoResult && (
@@ -313,6 +341,15 @@ export default function Trails() {
               />
             )}
           </Box>
+
+          {loadingTrails && items.length === 0 && (
+            <Box sx={{ display: "flex", justifyContent: "center", alignItems: "center", gap: 1, py: 4 }}>
+              <CircularProgress size={22} thickness={5} sx={{ color: "#2d4f1e" }} />
+              <Typography variant="body2" color="text.secondary">
+                {lang === "it" ? "Carico i percorsi…" : "Loading trails…"}
+              </Typography>
+            </Box>
+          )}
 
           <Box sx={cardGridSx}>
             {visible.map((trail) => renderTrailCard(trail))}

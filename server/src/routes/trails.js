@@ -5,7 +5,7 @@ import { pool } from "../db/pool.js";
 import { authMiddleware, optionalAuthMiddleware } from "../middleware/authMiddleware.js";
 import { upload } from "../middleware/uploadMiddleware.js";
 import { buildGeoJsonLineString, parseGpxFile } from "../services/gpxService.js";
-import { elevationQueue } from "../services/jobQueue.js";
+import { elevationQueue, poiQueue } from "../services/jobQueue.js";
 import { estimateTimeMinutes } from "../services/timeEstimation.js";
 import {
   deleteUploadFileSafe,
@@ -77,6 +77,8 @@ router.get("/discover", optionalAuthMiddleware, async (req, res) => {
   const lat = parseFloat(req.query.lat);
   const lon = parseFloat(req.query.lon);
   const userId = req.user?.id ?? null;
+  // light=1: senza svg_preview (payload più leggero per la mappa esplora).
+  const light = String(req.query.light || "") === "1" || String(req.query.light || "") === "true";
 
   const params = [userId];
   let orderSql = "t.created_at DESC";
@@ -94,13 +96,14 @@ router.get("/discover", optionalAuthMiddleware, async (req, res) => {
     orderSql = "t.elevation_gain_m DESC NULLS LAST, t.created_at DESC";
   }
 
+  const svgSelect = light ? "NULL::text AS svg_preview" : "t.svg_preview";
   const result = await pool.query(
     `SELECT
         t.id,
         t.name,
         t.distance_km,
         t.difficulty,
-        t.svg_preview,
+        ${svgSelect},
         t.parse_status,
         t.source,
         t.created_at,
@@ -188,13 +191,14 @@ router.post("/upload", authMiddleware, upload.single("file"), async (req, res) =
       for (const wp of parsed.waypoints) {
         if (!wp.type) continue;
         await pool.query(
-          `INSERT INTO waypoints (trail_id, geom, elevation_m, type, label)
+          `INSERT INTO waypoints (trail_id, geom, elevation_m, type, label, source)
            VALUES (
              $1,
              ST_SetSRID(ST_MakePoint($2, $3), 4326),
              $4,
              $5,
-             $6
+             $6,
+             'gpx'
            )`,
           [trailId, wp.lon, wp.lat, wp.elevation_m, wp.type, wp.label]
         );
@@ -207,6 +211,18 @@ router.post("/upload", authMiddleware, upload.single("file"), async (req, res) =
       {
         attempts: 3,
         backoff: { type: "exponential", delay: 5000 },
+        removeOnComplete: true,
+        removeOnFail: false,
+      }
+    );
+
+    // POI reali da OpenStreetMap lungo la traccia (una tantum, salvati in DB).
+    await poiQueue.add(
+      "fetch_pois",
+      { trailId },
+      {
+        attempts: 3,
+        backoff: { type: "exponential", delay: 8000 },
         removeOnComplete: true,
         removeOnFail: false,
       }

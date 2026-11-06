@@ -1,69 +1,103 @@
 import { useEffect, useRef } from "react";
 import { useMap } from "react-leaflet";
 
+/** Quantizza gradi: meno transform CSS ? mappa meno a scatti. */
+function quantizeDeg(deg, step = 5) {
+  if (typeof deg !== "number" || Number.isNaN(deg)) return 0;
+  const q = Math.round(deg / step) * step;
+  return ((q % 360) + 360) % 360;
+}
+
 /**
- * Rotazione mappa via CSS sul mapPane.
- * - compassOn: bearing = heading GPS/bussola (track-up / head-up)
- * - compassOff: bearing = manualBearing (gesture 2 dita) oppure 0 = nord in alto
+ * Ruota tile + overlay attorno al centro schermo.
+ * I marker non ruotano: in track-up la punta resta in alto.
  */
 export default function MapBearingControl({
   compassOn = false,
   headingDeg = null,
   manualBearing = 0,
   onManualBearingChange,
-  pivotLatLng = null,
 }) {
   const map = useMap();
   const gestureRef = useRef(null);
+  const lastAppliedRef = useRef(null);
+  const compassOnRef = useRef(compassOn);
+  const headingRef = useRef(headingDeg);
   const manualRef = useRef(manualBearing);
+  compassOnRef.current = compassOn;
+  headingRef.current = headingDeg;
   manualRef.current = manualBearing;
 
   useEffect(() => {
-    const pane = map.getPane?.("mapPane");
-    if (!pane) return;
+    const panes = ["tilePane", "overlayPane", "shadowPane"]
+      .map((n) => map.getPane?.(n))
+      .filter(Boolean);
+    if (!panes.length) return;
 
-    const apply = () => {
-      const bearing = compassOn
-        ? typeof headingDeg === "number" && !Number.isNaN(headingDeg)
-          ? headingDeg
+    let raf = 0;
+    const apply = (bearingRaw) => {
+      const bearing = quantizeDeg(bearingRaw, 5);
+      if (lastAppliedRef.current === bearing) return;
+      lastAppliedRef.current = bearing;
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => {
+        for (const pane of panes) {
+          if (!bearing) {
+            pane.style.transform = "";
+            pane.style.transformOrigin = "";
+          } else {
+            pane.style.transformOrigin = "50% 50%";
+            pane.style.transform = `rotate(${-bearing}deg)`;
+            pane.style.willChange = "transform";
+          }
+        }
+      });
+    };
+
+    const tick = () => {
+      const bearing = compassOnRef.current
+        ? typeof headingRef.current === "number" && !Number.isNaN(headingRef.current)
+          ? headingRef.current
           : 0
         : Number(manualRef.current) || 0;
+      apply(bearing);
+    };
 
+    tick();
+    return () => {
+      cancelAnimationFrame(raf);
+      for (const pane of panes) {
+        pane.style.transform = "";
+        pane.style.transformOrigin = "";
+        pane.style.willChange = "";
+      }
+      lastAppliedRef.current = null;
+    };
+  }, [map]);
+
+  useEffect(() => {
+    const panes = ["tilePane", "overlayPane", "shadowPane"]
+      .map((n) => map.getPane?.(n))
+      .filter(Boolean);
+    const raw = compassOn
+      ? typeof headingDeg === "number" && !Number.isNaN(headingDeg)
+        ? headingDeg
+        : 0
+      : Number(manualBearing) || 0;
+    const bearing = quantizeDeg(raw, 5);
+    if (lastAppliedRef.current === bearing) return;
+    lastAppliedRef.current = bearing;
+    for (const pane of panes) {
       if (!bearing) {
         pane.style.transform = "";
         pane.style.transformOrigin = "";
-        return;
+      } else {
+        pane.style.transformOrigin = "50% 50%";
+        pane.style.transform = `rotate(${-bearing}deg)`;
       }
+    }
+  }, [map, compassOn, headingDeg, manualBearing]);
 
-      let origin = "50% 50%";
-      if (pivotLatLng && Array.isArray(pivotLatLng) && pivotLatLng.length >= 2) {
-        try {
-          const pt = map.latLngToContainerPoint(pivotLatLng);
-          origin = `${pt.x}px ${pt.y}px`;
-        } catch {
-          /* ignore */
-        }
-      }
-      pane.style.transformOrigin = origin;
-      pane.style.transform = `rotate(${-bearing}deg)`;
-    };
-
-    apply();
-    map.on("move", apply);
-    map.on("zoom", apply);
-    map.on("zoomend", apply);
-    map.on("resize", apply);
-    return () => {
-      map.off("move", apply);
-      map.off("zoom", apply);
-      map.off("zoomend", apply);
-      map.off("resize", apply);
-      pane.style.transform = "";
-      pane.style.transformOrigin = "";
-    };
-  }, [map, compassOn, headingDeg, manualBearing, pivotLatLng]);
-
-  // Gesture 2 dita: ruota solo con bussola spenta
   useEffect(() => {
     if (compassOn) return;
     const el = map.getContainer();
@@ -72,7 +106,10 @@ export default function MapBearingControl({
     const angleOf = (t0, t1) => Math.atan2(t1.clientY - t0.clientY, t1.clientX - t0.clientX);
 
     const onStart = (e) => {
-      if (e.touches.length !== 2) return;
+      if (e.touches.length !== 2) {
+        gestureRef.current = null;
+        return;
+      }
       gestureRef.current = {
         startAngle: angleOf(e.touches[0], e.touches[1]),
         startBearing: manualRef.current || 0,
@@ -89,8 +126,8 @@ export default function MapBearingControl({
       onManualBearingChange?.(next);
     };
 
-    const onEnd = () => {
-      gestureRef.current = null;
+    const onEnd = (e) => {
+      if (!e.touches || e.touches.length < 2) gestureRef.current = null;
     };
 
     el.addEventListener("touchstart", onStart, { passive: true });

@@ -7,7 +7,8 @@
     "dev": "node --watch src/index.js",
     "start": "node src/index.js",
     "migrate": "node src/db/runMigration.js",
-    "recalc-elevation": "node scripts/recalculate-elevation.mjs"
+    "recalc-elevation": "node scripts/recalculate-elevation.mjs",
+    "backfill-pois": "node scripts/backfill-pois.mjs --inline"
   },
   "dependencies": {
     "bcryptjs": "^3.0.2",
