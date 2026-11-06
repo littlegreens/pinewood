@@ -11,6 +11,17 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=hestia.env
 source "${SCRIPT_DIR}/hestia.env"
 
+# Node via nvm (SSH non-interattivo non carica .bashrc)
+export NVM_DIR="${NVM_DIR:-/root/.nvm}"
+if [[ -s "${NVM_DIR}/nvm.sh" ]]; then
+  # shellcheck disable=SC1090
+  . "${NVM_DIR}/nvm.sh"
+fi
+if ! command -v npm >/dev/null 2>&1; then
+  echo "[deploy-hestia] ERRORE: npm non trovato nel PATH" >&2
+  exit 1
+fi
+
 GIT_ROOT="${PINWOOD_GIT_ROOT}"
 PUBLIC_HTML="${PINWOOD_PUBLIC_HTML}"
 SERVER_DIR="${PINWOOD_SERVER}"
