@@ -1,118 +1,113 @@
 import { useEffect, useRef } from "react";
 import { useMap } from "react-leaflet";
 
-/** Gradoni larghi = meno tremolio. */
-function quantizeDeg(deg, step = 8) {
+function normalizeDeg(deg) {
+  return ((Number(deg) % 360) + 360) % 360;
+}
+
+function quantizeDeg(deg, step = 6) {
   if (typeof deg !== "number" || Number.isNaN(deg)) return 0;
-  const q = Math.round(deg / step) * step;
-  return ((q % 360) + 360) % 360;
+  return normalizeDeg(Math.round(deg / step) * step);
 }
 
 /**
- * Ruota l’intero mapPane (tile + traccia + marker + popup) insieme.
- * Così la freccia, i POI e la linea restano allineati e non “spariscono”.
- * Fuori traccia: congela il bearing (niente tremolio).
+ * Ruota SOLO tile + overlay (traccia), mai mapPane/markerPane.
+ * Così Leaflet tiene il suo translate per pan/zoom e il fulcro resta il centro.
+ *
+ * - Bussola ON: bearing = heading (strada track-up). Override 2 dita temporaneo ? al rilascio torna.
+ * - Bussola OFF: bearing = rotazione manuale 2 dita (nord-up).
+ * Fuori traccia: non tocca nulla di speciale (nessun freeze).
  */
 export default function MapBearingControl({
   compassOn = false,
   headingDeg = null,
   manualBearing = 0,
   onManualBearingChange,
-  freezeBearing = false,
 }) {
   const map = useMap();
   const gestureRef = useRef(null);
   const lastAppliedRef = useRef(null);
-  const frozenBearingRef = useRef(0);
+  const tempOverrideRef = useRef(null); // solo in track-up durante 2 dita
   const compassOnRef = useRef(compassOn);
   const headingRef = useRef(headingDeg);
   const manualRef = useRef(manualBearing);
-  const freezeRef = useRef(freezeBearing);
   compassOnRef.current = compassOn;
   headingRef.current = headingDeg;
   manualRef.current = manualBearing;
-  freezeRef.current = freezeBearing;
 
-  useEffect(() => {
+  const getPanes = () =>
+    ["tilePane", "overlayPane", "shadowPane"].map((n) => map.getPane?.(n)).filter(Boolean);
+
+  const clearMapPaneHack = () => {
     const mapPane = map.getPane?.("mapPane");
-    if (!mapPane) return;
-
-    // Pulisci transform spezzati sui sotto-pane (causavano layer fantasma).
-    for (const name of ["tilePane", "overlayPane", "shadowPane", "markerPane", "tooltipPane", "popupPane"]) {
+    if (mapPane) {
+      // Non azzerare il translate di Leaflet: togli solo rotate se l'avevamo messo per errore in passato.
+      const t = mapPane.style.transform || "";
+      if (t.includes("rotate")) {
+        mapPane.style.transform = "";
+        mapPane.style.transformOrigin = "";
+      }
+    }
+    for (const name of ["markerPane", "tooltipPane", "popupPane"]) {
       const p = map.getPane?.(name);
       if (!p) continue;
       p.style.transform = "";
       p.style.transformOrigin = "";
       p.style.willChange = "";
     }
+  };
 
-    const apply = (bearingRaw) => {
-      const bearing = quantizeDeg(bearingRaw, 8);
-      if (lastAppliedRef.current === bearing) return;
-      lastAppliedRef.current = bearing;
+  const applyBearing = (raw) => {
+    const panes = getPanes();
+    if (!panes.length) return;
+    const bearing = quantizeDeg(raw, 6);
+    if (lastAppliedRef.current === bearing) return;
+    lastAppliedRef.current = bearing;
+    for (const pane of panes) {
       if (!bearing) {
-        mapPane.style.transform = "";
-        mapPane.style.transformOrigin = "";
-        mapPane.style.willChange = "";
+        pane.style.transform = "";
+        pane.style.transformOrigin = "";
+        pane.style.willChange = "";
       } else {
-        mapPane.style.transformOrigin = "50% 50%";
-        mapPane.style.transform = `rotate(${-bearing}deg)`;
-        mapPane.style.willChange = "transform";
+        // Centro del pane = centro viewport (i sotto-pane riempiono il container).
+        pane.style.transformOrigin = "50% 50%";
+        pane.style.transform = `rotate(${-bearing}deg)`;
       }
-      // Contro-rotazione testo popup (leggibile) e freccia gestita a parte via heading assoluto.
-      map.getContainer()?.style.setProperty("--pw-map-bearing", String(bearing));
-    };
+    }
+  };
 
-    const resolveBearing = () => {
-      if (freezeRef.current) return frozenBearingRef.current;
-      const next = compassOnRef.current
-        ? typeof headingRef.current === "number" && !Number.isNaN(headingRef.current)
-          ? headingRef.current
-          : 0
-        : Number(manualRef.current) || 0;
-      frozenBearingRef.current = next;
-      return next;
-    };
+  const resolveBearing = () => {
+    if (tempOverrideRef.current != null) return tempOverrideRef.current;
+    if (compassOnRef.current) {
+      return typeof headingRef.current === "number" && !Number.isNaN(headingRef.current)
+        ? headingRef.current
+        : 0;
+    }
+    return Number(manualRef.current) || 0;
+  };
 
-    apply(resolveBearing());
+  useEffect(() => {
+    clearMapPaneHack();
+    applyBearing(resolveBearing());
     return () => {
-      mapPane.style.transform = "";
-      mapPane.style.transformOrigin = "";
-      mapPane.style.willChange = "";
-      map.getContainer()?.style.removeProperty("--pw-map-bearing");
+      for (const pane of getPanes()) {
+        pane.style.transform = "";
+        pane.style.transformOrigin = "";
+        pane.style.willChange = "";
+      }
       lastAppliedRef.current = null;
+      tempOverrideRef.current = null;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [map]);
 
   useEffect(() => {
-    const mapPane = map.getPane?.("mapPane");
-    if (!mapPane) return;
-    let raw;
-    if (freezeBearing) {
-      raw = frozenBearingRef.current;
-    } else {
-      raw = compassOn
-        ? typeof headingDeg === "number" && !Number.isNaN(headingDeg)
-          ? headingDeg
-          : 0
-        : Number(manualBearing) || 0;
-      frozenBearingRef.current = raw;
-    }
-    const bearing = quantizeDeg(raw, 8);
-    if (lastAppliedRef.current === bearing) return;
-    lastAppliedRef.current = bearing;
-    if (!bearing) {
-      mapPane.style.transform = "";
-      mapPane.style.transformOrigin = "";
-    } else {
-      mapPane.style.transformOrigin = "50% 50%";
-      mapPane.style.transform = `rotate(${-bearing}deg)`;
-    }
-    map.getContainer()?.style.setProperty("--pw-map-bearing", String(bearing));
-  }, [map, compassOn, headingDeg, manualBearing, freezeBearing]);
+    applyBearing(resolveBearing());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [compassOn, headingDeg, manualBearing]);
 
+  // 2 dita: nord-up = bearing permanente; track-up = override temporaneo poi snap al heading.
   useEffect(() => {
-    if (compassOn || freezeBearing) return;
     const el = map.getContainer();
     if (!el) return;
 
@@ -123,9 +118,14 @@ export default function MapBearingControl({
         gestureRef.current = null;
         return;
       }
+      const base = compassOnRef.current
+        ? typeof headingRef.current === "number" && !Number.isNaN(headingRef.current)
+          ? headingRef.current
+          : 0
+        : Number(manualRef.current) || 0;
       gestureRef.current = {
         startAngle: angleOf(e.touches[0], e.touches[1]),
-        startBearing: manualRef.current || 0,
+        startBearing: tempOverrideRef.current ?? base,
       };
     };
 
@@ -134,13 +134,23 @@ export default function MapBearingControl({
       e.preventDefault();
       const cur = angleOf(e.touches[0], e.touches[1]);
       const deltaDeg = ((cur - gestureRef.current.startAngle) * 180) / Math.PI;
-      let next = gestureRef.current.startBearing - deltaDeg;
-      next = ((next % 360) + 360) % 360;
-      onManualBearingChange?.(next);
+      let next = normalizeDeg(gestureRef.current.startBearing - deltaDeg);
+      if (compassOnRef.current) {
+        tempOverrideRef.current = next;
+        applyBearing(next);
+      } else {
+        onManualBearingChange?.(next);
+      }
     };
 
     const onEnd = (e) => {
-      if (!e.touches || e.touches.length < 2) gestureRef.current = null;
+      if (e.touches && e.touches.length >= 2) return;
+      gestureRef.current = null;
+      if (compassOnRef.current && tempOverrideRef.current != null) {
+        // Torna all’orientamento heading (strada dritta davanti).
+        tempOverrideRef.current = null;
+        applyBearing(resolveBearing());
+      }
     };
 
     el.addEventListener("touchstart", onStart, { passive: true });
@@ -153,7 +163,7 @@ export default function MapBearingControl({
       el.removeEventListener("touchend", onEnd);
       el.removeEventListener("touchcancel", onEnd);
     };
-  }, [map, compassOn, freezeBearing, onManualBearingChange]);
+  }, [map, onManualBearingChange]);
 
   return null;
 }
