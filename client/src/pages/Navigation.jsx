@@ -1,8 +1,7 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import L from "leaflet";
 import { Box, IconButton, Typography } from "@mui/material";
 import StopIcon from "@mui/icons-material/Stop";
-import ExploreIcon from "@mui/icons-material/Explore";
 import { MapContainer, Marker, Polyline, TileLayer, useMap } from "react-leaflet";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { detectLanguage, t } from "../services/i18n.js";
@@ -19,7 +18,6 @@ import {
   lockPortraitOrientation,
 } from "../utils/screenChrome.js";
 import AppBanner from "../components/AppBanner.jsx";
-import MapBearingControl from "../components/MapBearingControl.jsx";
 import { buildElevationProfilePath as buildElevationProfilePathBase } from "../utils/elevationProfilePath.js";
 
 const OFF_ROUTE_VIBRATE_PULSE_MS = 900;
@@ -86,22 +84,16 @@ const USER_MARKER_ICON = L.divIcon({
   iconAnchor: [20, 20],
 });
 
-/**
- * Track-up: tip FISSO in alto. Nord-up: tip = heading.
- */
-function NavigationUserMarker({ position, headingDeg, compassOn = false }) {
+/** Freccia: punta dove guardi. La mappa resta nord-up, gesti Leaflet nativi. */
+function NavigationUserMarker({ position, headingDeg }) {
   const markerRef = useRef(null);
   useEffect(() => {
     const el = markerRef.current?.getElement?.();
     const rot = el?.querySelector?.(".pinewood-nav-user-rot");
     if (!rot) return;
-    const deg = compassOn
-      ? 0
-      : typeof headingDeg === "number" && !Number.isNaN(headingDeg)
-        ? headingDeg
-        : 0;
+    const deg = typeof headingDeg === "number" && !Number.isNaN(headingDeg) ? headingDeg : 0;
     rot.style.transform = `rotate(${deg}deg)`;
-  }, [headingDeg, compassOn, position]);
+  }, [headingDeg, position]);
   return <Marker ref={markerRef} position={position} icon={USER_MARKER_ICON} />;
 }
 
@@ -170,10 +162,6 @@ export default function Navigation() {
   const actualTrackRef = useRef([]);
   const deviationsCountRef = useRef(0);
   const [loadError, setLoadError] = useState("");
-  /** Bussola ON = track-up (dove guardo); OFF = nord / rotazione manuale 2 dita. */
-  const [compassOn, setCompassOn] = useState(false);
-  const [manualBearing, setManualBearing] = useState(0);
-  const onManualBearingChange = useCallback((deg) => setManualBearing(deg), []);
   const isOfflineLocalSession = useMemo(
     () => String(sessionId || "").startsWith("local_") || location.state?.offlineSession === true,
     [sessionId, location.state]
@@ -767,19 +755,6 @@ export default function Navigation() {
     centeredOnStartRef.current = true;
   }, [mapInstance, startGate, position]);
 
-  // Accensione bussola: un solo ricentra. Nessun follow continuo (rompe i layer).
-  useEffect(() => {
-    if (!compassOn || !mapInstance || !position) return;
-    if (!isLeafletMapUsable(mapInstance)) return;
-    userPannedRef.current = false;
-    try {
-      mapInstance.setView(position, Math.max(mapInstance.getZoom() || 14, 15), { animate: false });
-    } catch {
-      /* ignore */
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [compassOn]);
-
   useEffect(() => {
     actualTrackRef.current = actualTrack;
   }, [actualTrack]);
@@ -1093,42 +1068,6 @@ export default function Navigation() {
               <Box
                 sx={{
                   position: "absolute",
-                  top: 12,
-                  right: 12,
-                  zIndex: 1400,
-                  pointerEvents: "none",
-                }}
-              >
-                <IconButton
-                  onClick={() => {
-                    setCompassOn((v) => {
-                      const next = !v;
-                      if (next) setManualBearing(0);
-                      return next;
-                    });
-                  }}
-                  aria-label={compassOn ? "Bussola attiva (track-up)" : "Bussola spenta (nord / ruota a 2 dita)"}
-                  aria-pressed={compassOn}
-                  sx={{
-                    pointerEvents: "auto",
-                    width: 44,
-                    height: 44,
-                    bgcolor: compassOn ? "#1E88E5" : "rgba(255,255,255,0.94)",
-                    color: compassOn ? "#fff" : "#111",
-                    border: "1px solid rgba(0,0,0,0.08)",
-                    boxShadow: "0 2px 10px rgba(0,0,0,0.14)",
-                    "&:hover": { bgcolor: compassOn ? "#1976D2" : "#fff" },
-                  }}
-                >
-                  <ExploreIcon sx={{ fontSize: 26 }} />
-                </IconButton>
-              </Box>
-            )}
-
-            {startGate === "ready" && (
-              <Box
-                sx={{
-                  position: "absolute",
                   left: 0,
                   right: 0,
                   bottom: "max(14px, env(safe-area-inset-bottom))",
@@ -1171,12 +1110,6 @@ export default function Navigation() {
               keyboard={false}
             >
               <MapReadyBridge onReady={setMapInstance} />
-              <MapBearingControl
-                compassOn={compassOn}
-                headingDeg={userHeading}
-                manualBearing={manualBearing}
-                onManualBearingChange={onManualBearingChange}
-              />
               <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" attribution="" />
               {line.length > 1 && (
                 <Polyline
@@ -1216,13 +1149,7 @@ export default function Navigation() {
                   }}
                 />
               )}
-              {position && (
-                <NavigationUserMarker
-                  position={position}
-                  headingDeg={userHeading}
-                  compassOn={compassOn}
-                />
-              )}
+              {position && <NavigationUserMarker position={position} headingDeg={userHeading} />}
             </MapContainer>
           </Box>
         </>
