@@ -52,7 +52,7 @@ export default defineConfig({
             options: {
               cacheName: "pinewood-osm-tiles",
               expiration: {
-                maxEntries: 220,
+                maxEntries: 800,
                 maxAgeSeconds: 60 * 60 * 24 * 30,
               },
             },
@@ -68,7 +68,8 @@ export default defineConfig({
     host: "0.0.0.0",
     port: 5173,
     watch: { usePolling: true },
-    allowedHosts: [".ts.net", "caplav61969.tailed44b5.ts.net"],
+    // true = qualsiasi host (tunnel Cloudflare / Tailscale / LAN). Solo in dev.
+    allowedHosts: true,
     proxy: {
       "/api": {
         target: devProxyTarget,

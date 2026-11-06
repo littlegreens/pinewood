@@ -8,7 +8,9 @@ import React, {
 } from "react";
 import { Platform, StyleSheet } from "react-native";
 import { WebView } from "react-native-webview";
+import * as FileSystem from "expo-file-system/legacy";
 import { LEAFLET_HTML } from "./leaflet/leafletHtml";
+import { getTilesBaseUri } from "../services/offlineMaps";
 
 const LeafletMap = forwardRef(function LeafletMap(
   {
@@ -22,7 +24,10 @@ const LeafletMap = forwardRef(function LeafletMap(
     actualPath = null,
     userPosition = null,
     heading = null,
+    reconnectPath = null,
     followUser = false,
+    /** Se true, Leaflet prova prima i PNG scaricati in documentDirectory/tiles. */
+    useOfflineTiles = false,
     onTrailPress,
     onMapPress,
     onReady,
@@ -31,6 +36,7 @@ const LeafletMap = forwardRef(function LeafletMap(
 ) {
   const webRef = useRef(null);
   const [ready, setReady] = useState(false);
+  const tilesDir = FileSystem.documentDirectory || "";
 
   const post = useCallback(
     (msg) => {
@@ -106,10 +112,19 @@ const LeafletMap = forwardRef(function LeafletMap(
       actualPath,
       userPosition,
       heading,
+      reconnectPath,
       followUser,
       rotateCourseUp: followUser,
     });
-  }, [ready, mode, trailPath, actualPath, userPosition, heading, followUser, post]);
+  }, [ready, mode, trailPath, actualPath, userPosition, heading, reconnectPath, followUser, post]);
+
+  useEffect(() => {
+    if (!ready) return;
+    post({
+      type: "setOfflineTiles",
+      baseUri: useOfflineTiles ? getTilesBaseUri() : null,
+    });
+  }, [ready, useOfflineTiles, post]);
 
   const onMessage = useCallback(
     (event) => {
@@ -134,12 +149,19 @@ const LeafletMap = forwardRef(function LeafletMap(
     <WebView
       ref={webRef}
       style={[styles.fill, style]}
-      source={{ html: LEAFLET_HTML }}
+      source={{
+        html: LEAFLET_HTML,
+        // baseUrl file:// consente a iOS di caricare i PNG da documentDirectory
+        baseUrl: tilesDir || undefined,
+      }}
       originWhitelist={["*"]}
       javaScriptEnabled
       domStorageEnabled
       mixedContentMode="always"
       allowsInlineMediaPlayback
+      allowFileAccess
+      allowUniversalAccessFromFileURLs
+      allowingReadAccessToURL={tilesDir || undefined}
       onMessage={onMessage}
       onLoadEnd={() => {
         setTimeout(() => post({ type: "invalidate" }), 200);

@@ -61,7 +61,6 @@ export function vibrateOffRoutePulse() {
 export function speakOffRouteMessage(text, lang) {
   if (!window.speechSynthesis || !text) return;
   try {
-    window.speechSynthesis.cancel();
     const u = new SpeechSynthesisUtterance(text);
     u.lang = lang === "it" ? "it-IT" : "en-US";
     u.rate = 1;

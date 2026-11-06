@@ -82,6 +82,7 @@ const dictionary = {
       "Non riusciamo a rilevare la tua posizione. Attiva il GPS e concedi i permessi, poi riprova.",
     navStartGoBack: "Torna indietro",
     navOffRouteAlertShort: "Sei uscito dal tracciato",
+    navOffRouteAlertMeters: "Sei fuori traccia di {m}m",
     navOffRouteVoice: "Attenzione. Sei uscito dal tracciato.",
     navHideBrowserChrome: "Schermo intero (nascondi barre)",
     navImmersiveSafariNote:
@@ -199,6 +200,7 @@ const dictionary = {
     navStartNoGps: "We can't get your location. Turn on GPS and allow permissions, then try again.",
     navStartGoBack: "Go back",
     navOffRouteAlertShort: "You left the trail",
+    navOffRouteAlertMeters: "You are {m}m off track",
     navOffRouteVoice: "Warning. You have left the trail.",
     navHideBrowserChrome: "Fullscreen (hide browser bars)",
     navImmersiveSafariNote:

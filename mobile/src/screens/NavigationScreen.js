@@ -67,6 +67,8 @@ export default function NavigationScreen() {
   const [userPos, setUserPos] = useState(null);
   const [heading, setHeading] = useState(null);
   const [isOffRoute, setIsOffRoute] = useState(false);
+  const [offRouteDistM, setOffRouteDistM] = useState(null);
+  const [reconnectPoint, setReconnectPoint] = useState(null);
   const [actualTrack, setActualTrack] = useState([]);
   const [deviationsCount, setDeviationsCount] = useState(0);
   const [userDistanceM, setUserDistanceM] = useState(null);
@@ -87,10 +89,15 @@ export default function NavigationScreen() {
     setNavigationListeners({
       onUserPos: setUserPos,
       onHeading: setHeading,
-      onAlongTrail: (along) => setUserDistanceM(along),
+      onAlongTrail: (along, minDist, nearest) => {
+        setUserDistanceM(along);
+        setOffRouteDistM(typeof minDist === "number" && Number.isFinite(minDist) ? minDist : null);
+        setReconnectPoint(Array.isArray(nearest) ? nearest : null);
+      },
       onOffRouteChange: (off, count) => {
         setIsOffRoute(off);
         setDeviationsCount(count);
+        if (!off) setReconnectPoint(null);
       },
       onTrack: setActualTrack,
     });
@@ -167,9 +174,13 @@ export default function NavigationScreen() {
     startWatching({ highAccuracy: true, intervalMs: 2000, distanceM: 3 });
 
     (async () => {
-      try {
-        await startBackgroundTracking(NAV_BG_TASK_NAME);
-      } catch {}
+      const ok = await startBackgroundTracking(NAV_BG_TASK_NAME);
+      if (!ok && Platform.OS === "android") {
+        Alert.alert(
+          "GPS in background",
+          "Senza permesso «posizione sempre» gli avvisi fuori traccia possono fermarsi se blocchi lo schermo. Concedi il permesso nelle impostazioni di Pinewood.",
+        );
+      }
     })();
 
     const unsub = subscribePosition((snap) => {
@@ -177,9 +188,15 @@ export default function NavigationScreen() {
       if (!pos) return;
       const heading =
         snap && !Array.isArray(snap) && typeof snap.heading === "number" ? snap.heading : null;
+      const compassHeading =
+        snap && !Array.isArray(snap) && typeof snap.compassHeading === "number"
+          ? snap.compassHeading
+          : null;
       const speed =
         snap && !Array.isArray(snap) && typeof snap.speed === "number" ? snap.speed : null;
-      processNavigationPosition(pos, heading, speed);
+      const accuracy =
+        snap && !Array.isArray(snap) && typeof snap.accuracy === "number" ? snap.accuracy : null;
+      processNavigationPosition(pos, heading, speed, accuracy, compassHeading);
     });
 
     return () => {
@@ -271,7 +288,11 @@ export default function NavigationScreen() {
         actualPath={actualTrack}
         userPosition={userPos}
         heading={heading}
+        reconnectPath={
+          isOffRoute && userPos && reconnectPoint ? [userPos, reconnectPoint] : null
+        }
         followUser
+        useOfflineTiles
         interactive
       />
 
@@ -327,7 +348,14 @@ export default function NavigationScreen() {
       </View>
 
       <AppBanner
-        message={isOffRoute ? t(lang, "navOffRouteAlertShort") : ""}
+        message={
+          isOffRoute
+            ? t(lang, "navOffRouteAlertMeters").replace(
+                "{m}",
+                String(Math.max(1, Math.round(offRouteDistM || 0))),
+              )
+            : ""
+        }
         type="warning"
         durationMs={0}
         topOffset={Platform.OS === "ios" ? insets.top + 120 : insets.top + 100}

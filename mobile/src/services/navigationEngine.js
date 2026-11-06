@@ -7,12 +7,15 @@ import { t } from "./i18n";
 
 export const NAV_BG_TASK_NAME = "pinewood-nav-background-location";
 
-const OFF_ROUTE_ENTER_M = 30;
-const OFF_ROUTE_EXIT_M = 22;
-const OFF_ROUTE_ENTER_DELAY_MS = 4500;
-const OFF_ROUTE_EXIT_DELAY_MS = 2500;
+const OFF_ROUTE_ENTER_M = 32;
+const OFF_ROUTE_EXIT_M = 24;
+const OFF_ROUTE_ENTER_DELAY_MS = 5000;
+const OFF_ROUTE_EXIT_DELAY_MS = 3000;
 const OFF_ROUTE_VOICE_INTERVAL_MS = 3000;
 const OFF_ROUTE_VIBRATE_PULSE_MS = 900;
+/** Fix GPS peggiori di così: non cambiare stato (evita falsi allarmi), ma ripeti avvisi se già fuori. */
+const GPS_MAX_ACCURACY_TRUST_M = 55;
+const OFF_ROUTE_ENTER_MIN_SAMPLES = 2;
 const HEADING_PUBLISH_MIN_DELTA_DEG = 2;
 const MIN_TRACK_POINT_DIST_M = 8;
 const SESSION_PATCH_INTERVAL_MS = 10000;
@@ -71,9 +74,16 @@ export function computeCumulativeDistances(trailLine) {
 }
 
 function computeUserProjectionAlongTrail(userPos, trailLine, cumDist) {
-  if (trailLine.length < 2) return { minDist: Infinity, along: 0 };
+  if (trailLine.length < 2) {
+    return {
+      minDist: trailLine.length === 1 ? distanceMeters(userPos, trailLine[0]) : Infinity,
+      along: 0,
+      nearestPoint: trailLine[0] || null,
+    };
+  }
   let minSegDist = Infinity;
   let bestAlong = 0;
+  let nearestPoint = trailLine[0];
   for (let i = 0; i < trailLine.length - 1; i++) {
     const segLen = Math.max(0, cumDist[i + 1] - cumDist[i]);
     const { distance, t: segT } = pointToSegmentProjection(userPos, trailLine[i], trailLine[i + 1]);
@@ -81,15 +91,30 @@ function computeUserProjectionAlongTrail(userPos, trailLine, cumDist) {
     if (distance < minSegDist - 1 || (Math.abs(distance - minSegDist) <= 1 && along < bestAlong)) {
       minSegDist = distance;
       bestAlong = along;
+      nearestPoint = [
+        trailLine[i][0] + (trailLine[i + 1][0] - trailLine[i][0]) * segT,
+        trailLine[i][1] + (trailLine[i + 1][1] - trailLine[i][1]) * segT,
+      ];
     }
   }
-  return { minDist: minSegDist, along: bestAlong };
+  return { minDist: minSegDist, along: bestAlong, nearestPoint };
 }
 
 function speakOffRoute(lang) {
   const voiceLang = lang === "it" ? "it-IT" : "en-US";
-  Speech.stop();
   Speech.speak(t(lang, "navOffRouteVoice"), { language: voiceLang, rate: 1 });
+}
+
+function repeatOffRouteAlerts(now) {
+  if (now - runtime.lastOffRoutePulse >= OFF_ROUTE_VIBRATE_PULSE_MS) {
+    runtime.lastOffRoutePulse = now;
+    pulseOffRouteHaptics();
+  }
+  if (now - runtime.lastOffRouteVoice >= OFF_ROUTE_VOICE_INTERVAL_MS) {
+    runtime.lastOffRouteVoice = now;
+    speakOffRoute(runtime.lang);
+  }
+  runtime.listeners.onOffRouteChange?.(true, runtime.deviationsCount);
 }
 
 /** Sequenza di impatti forti (ripetuta mentre sei fuori traccia). */
@@ -126,6 +151,7 @@ const runtime = {
   pendingOnRouteSince: null,
   lastOffRoutePulse: 0,
   lastOffRouteVoice: 0,
+  offRouteEnterSamples: 0,
   lastPatch: 0,
   actualTrack: [],
   deviationsCount: 0,
@@ -150,6 +176,7 @@ export function configureNavigation({
   runtime.pendingOnRouteSince = null;
   runtime.lastOffRoutePulse = 0;
   runtime.lastOffRouteVoice = 0;
+  runtime.offRouteEnterSamples = 0;
   runtime.actualTrack = [];
   runtime.deviationsCount = 0;
 }
@@ -164,11 +191,46 @@ export function clearNavigation() {
   runtime.listeners = {};
 }
 
-export function processNavigationPosition(pos, deviceHeading, speed) {
+/** Soglia velocità (m/s): sotto ~1.5 km/h usa bussola; sopra usa GPS bearing. */
+const COMPASS_MAX_SPEED_MS = 1.5 / 3.6;
+
+/**
+ * @param {[number, number]} pos
+ * @param {number|null} deviceHeading heading GPS (coords.heading)
+ * @param {number|null} speed m/s
+ * @param {number|null} accuracy m
+ * @param {number|null} compassHeading bussola magnetica / trueHeading
+ */
+export function processNavigationPosition(
+  pos,
+  deviceHeading,
+  speed,
+  accuracy = null,
+  compassHeading = null,
+) {
   if (!runtime.active || !Array.isArray(pos)) return;
+  const gpsTrustworthy =
+    accuracy == null || !Number.isFinite(accuracy) || accuracy <= GPS_MAX_ACCURACY_TRUST_M;
+
+  const movingFast =
+    typeof speed === "number" && !Number.isNaN(speed) && speed >= COMPASS_MAX_SPEED_MS;
 
   let h = null;
-  if (typeof deviceHeading === "number" && !Number.isNaN(deviceHeading) && (speed == null || speed > 0.35)) {
+  if (movingFast) {
+    if (typeof deviceHeading === "number" && !Number.isNaN(deviceHeading) && deviceHeading >= 0) {
+      h = deviceHeading;
+    } else if (runtime.prevPos) {
+      const moved = distanceMeters(runtime.prevPos, pos);
+      if (moved > 4) h = bearingDeg(runtime.prevPos, pos);
+    }
+  } else if (typeof compassHeading === "number" && !Number.isNaN(compassHeading)) {
+    h = compassHeading;
+  } else if (
+    typeof deviceHeading === "number" &&
+    !Number.isNaN(deviceHeading) &&
+    deviceHeading >= 0 &&
+    (speed == null || speed > 0.35)
+  ) {
     h = deviceHeading;
   } else if (runtime.prevPos) {
     const moved = distanceMeters(runtime.prevPos, pos);
@@ -196,22 +258,29 @@ export function processNavigationPosition(pos, deviceHeading, speed) {
     .map((c) => [c.latitude, c.longitude]);
   if (line.length < 2) return;
 
-  const { minDist, along } = computeUserProjectionAlongTrail(
+  const { minDist, along, nearestPoint } = computeUserProjectionAlongTrail(
     pos,
     line,
     runtime.cumulativeDistances,
   );
-  runtime.listeners.onAlongTrail?.(along, minDist);
+  runtime.listeners.onAlongTrail?.(along, minDist, nearestPoint);
 
   const now = Date.now();
   const currentlyOff = runtime.wasOffRoute;
 
-  if (!currentlyOff && minDist > OFF_ROUTE_ENTER_M) {
+  if (!gpsTrustworthy) {
+    if (currentlyOff) repeatOffRouteAlerts(now);
+  } else if (!currentlyOff && minDist > OFF_ROUTE_ENTER_M) {
+    runtime.offRouteEnterSamples += 1;
     if (!runtime.pendingOffRouteSince) runtime.pendingOffRouteSince = now;
-    if (now - runtime.pendingOffRouteSince >= OFF_ROUTE_ENTER_DELAY_MS) {
+    if (
+      runtime.offRouteEnterSamples >= OFF_ROUTE_ENTER_MIN_SAMPLES &&
+      now - runtime.pendingOffRouteSince >= OFF_ROUTE_ENTER_DELAY_MS
+    ) {
       runtime.wasOffRoute = true;
       runtime.pendingOffRouteSince = null;
       runtime.pendingOnRouteSince = null;
+      runtime.offRouteEnterSamples = 0;
       runtime.lastOffRoutePulse = now;
       runtime.lastOffRouteVoice = now;
       runtime.deviationsCount += 1;
@@ -219,7 +288,8 @@ export function processNavigationPosition(pos, deviceHeading, speed) {
       pulseOffRouteHaptics();
       speakOffRoute(runtime.lang);
     }
-  } else if (currentlyOff && minDist < OFF_ROUTE_EXIT_M) {
+  } else if (gpsTrustworthy && currentlyOff && minDist < OFF_ROUTE_EXIT_M) {
+    runtime.offRouteEnterSamples = 0;
     if (!runtime.pendingOnRouteSince) runtime.pendingOnRouteSince = now;
     if (now - runtime.pendingOnRouteSince >= OFF_ROUTE_EXIT_DELAY_MS) {
       runtime.wasOffRoute = false;
@@ -230,17 +300,11 @@ export function processNavigationPosition(pos, deviceHeading, speed) {
       runtime.listeners.onOffRouteChange?.(false, runtime.deviationsCount);
     }
   } else if (currentlyOff) {
+    runtime.offRouteEnterSamples = 0;
     runtime.pendingOnRouteSince = null;
-    if (now - runtime.lastOffRoutePulse >= OFF_ROUTE_VIBRATE_PULSE_MS) {
-      runtime.lastOffRoutePulse = now;
-      pulseOffRouteHaptics();
-    }
-    if (now - runtime.lastOffRouteVoice >= OFF_ROUTE_VOICE_INTERVAL_MS) {
-      runtime.lastOffRouteVoice = now;
-      speakOffRoute(runtime.lang);
-    }
-    runtime.listeners.onOffRouteChange?.(true, runtime.deviationsCount);
-  } else {
+    repeatOffRouteAlerts(now);
+  } else if (gpsTrustworthy) {
+    runtime.offRouteEnterSamples = 0;
     runtime.pendingOffRouteSince = null;
     runtime.listeners.onOffRouteChange?.(false, runtime.deviationsCount);
   }
@@ -289,6 +353,8 @@ if (!TaskManager.isTaskDefined(NAV_BG_TASK_NAME)) {
       [loc.coords.latitude, loc.coords.longitude],
       loc.coords.heading,
       loc.coords.speed,
+      loc.coords.accuracy,
+      null,
     );
   });
 }

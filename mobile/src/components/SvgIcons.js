@@ -6,11 +6,15 @@ const LOGO_ASPECT = 270 / 1024;
 const LOGO_DARK = require("../../assets/logo-wordmark-dark.png");
 const LOGO_WHITE = require("../../assets/logo-wordmark-white.png");
 
+function isLightLogoColor(color) {
+  const c = String(color || "").trim().toLowerCase();
+  return c === "#fff" || c === "#ffffff" || c === "white" || c.endsWith("fff");
+}
+
 /** Wordmark PNG ufficiale — `resizeMode: contain` per non tagliare. */
 export function PinewoodLogo({ width = 160, color = "#1d1d1b" }) {
   const height = width * LOGO_ASPECT;
-  const c = String(color || "").trim().toLowerCase();
-  const useWhite = c === "#fff" || c === "#ffffff" || c === "white";
+  const useWhite = isLightLogoColor(color);
   return (
     <View style={{ width, height, justifyContent: "center", alignItems: "center" }}>
       <Image

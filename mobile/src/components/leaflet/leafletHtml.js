@@ -25,13 +25,17 @@ export const LEAFLET_HTML = `<!DOCTYPE html>
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><circle fill="#fff" cx="10" cy="10.1" r="9.1"/><path fill="#2d4f1e" d="M5.5,14.5l7-2,2-7-7,2-2,7ZM10,11.5c-.4,0-.8-.1-1.1-.4s-.4-.6-.4-1.1.1-.8.4-1.1c.3-.3.6-.4,1.1-.4s.8.1,1.1.4c.3.3.4.6.4,1.1s-.1.8-.4,1.1c-.3.3-.6.4-1.1.4ZM10,20c-1.4,0-2.7-.3-3.9-.8s-2.3-1.2-3.2-2.1-1.6-2-2.1-3.2-.8-2.5-.8-3.9.3-2.7.8-3.9,1.2-2.3,2.1-3.2,2-1.6,3.2-2.1,2.5-.8,3.9-.8,2.7.3,3.9.8,2.3,1.2,3.2,2.1,1.6,2,2.1,3.2.8,2.5.8,3.9-.3,2.7-.8,3.9-1.2,2.3-2.1,3.2-2,1.6-3.2,2.1-2.5.8-3.9.8ZM10,18c2.2,0,4.1-.8,5.7-2.3s2.3-3.4,2.3-5.7-.8-4.1-2.3-5.7-3.4-2.3-5.7-2.3-4.1.8-5.7,2.3-2.3,3.4-2.3,5.7.8,4.1,2.3,5.7,3.4,2.3,5.7,2.3Z"/></svg>'
   );
 
-  var map, clusterGroup, pathLayer, trailLayer, actualLayer, startMarker, endMarker, userMarker;
+  var map, clusterGroup, pathLayer, trailLayer, actualLayer, reconnectLayer, startMarker, endMarker, userMarker;
+  var tileLayer = null;
   var mode = "discover";
   var interactive = true;
   var courseUpEnabled = false;
   var savedDiscoverView = null;
   var DISCOVER_FLY_IN = 0.5;
   var DISCOVER_FLY_OUT = 0.45;
+  /** Base file:// per tile OSM scaricate offline (impostata da RN). */
+  var offlineTileBase = null;
+  var OSM_ONLINE = "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png";
 
   function post(msg) {
     if (window.ReactNativeWebView) {
@@ -48,11 +52,56 @@ export const LEAFLET_HTML = `<!DOCTYPE html>
     });
   }
 
+  function onlineTileUrl(coords) {
+    var s = ["a", "b", "c"][Math.abs(coords.x + coords.y) % 3];
+    return OSM_ONLINE
+      .replace("{s}", s)
+      .replace("{z}", String(coords.z))
+      .replace("{x}", String(coords.x))
+      .replace("{y}", String(coords.y));
+  }
+
+  function localTileUrl(coords) {
+    if (!offlineTileBase) return null;
+    var base = offlineTileBase.charAt(offlineTileBase.length - 1) === "/"
+      ? offlineTileBase
+      : offlineTileBase + "/";
+    return base + coords.z + "/" + coords.x + "/" + coords.y + ".png";
+  }
+
+  function ensureTileLayer() {
+    if (!map) return;
+    if (tileLayer) {
+      map.removeLayer(tileLayer);
+      tileLayer = null;
+    }
+    // Preferisce file locali; se mancano o falliscono, ricade su OSM online.
+    tileLayer = L.tileLayer(OSM_ONLINE, {
+      maxZoom: 19,
+      crossOrigin: true,
+      errorTileUrl: "",
+    });
+    tileLayer.getTileUrl = function (coords) {
+      var local = localTileUrl(coords);
+      if (local) return local;
+      return onlineTileUrl(coords);
+    };
+    tileLayer.on("tileerror", function (e) {
+      try {
+        var img = e.tile;
+        if (!img || img._pinewoodOnlineFallback) return;
+        var coords = e.coords;
+        if (!coords) return;
+        img._pinewoodOnlineFallback = true;
+        img.src = onlineTileUrl(coords);
+      } catch (err) { /* ignore */ }
+    });
+    tileLayer.addTo(map);
+  }
+
   function initMap() {
     map = L.map("map", { zoomControl: false, attributionControl: false }).setView([42.7, 12.6], 10);
-    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-      maxZoom: 19,
-    }).addTo(map);
+    ensureTileLayer();
     map.on("click", function () { post({ type: "mapClick" }); });
     setTimeout(function () { map.invalidateSize(); }, 100);
     post({ type: "ready" });
@@ -119,6 +168,7 @@ export const LEAFLET_HTML = `<!DOCTYPE html>
     clearPath();
     if (trailLayer) { map.removeLayer(trailLayer); trailLayer = null; }
     if (actualLayer) { map.removeLayer(actualLayer); actualLayer = null; }
+    if (reconnectLayer) { map.removeLayer(reconnectLayer); reconnectLayer = null; }
     if (startMarker) { map.removeLayer(startMarker); startMarker = null; }
     if (endMarker) { map.removeLayer(endMarker); endMarker = null; }
     if (userMarker) { map.removeLayer(userMarker); userMarker = null; }
@@ -234,6 +284,15 @@ export const LEAFLET_HTML = `<!DOCTYPE html>
     if (actual.length >= 2) {
       actualLayer = L.polyline(actual, { color: "#c9a84c", weight: 3 }).addTo(map);
     }
+    var reconnect = data.reconnectPath || [];
+    if (reconnect.length >= 2) {
+      reconnectLayer = L.polyline(reconnect, {
+        color: "#ff6b00",
+        weight: 3,
+        dashArray: "10 8",
+        opacity: 0.95,
+      }).addTo(map);
+    }
     courseUpEnabled = Boolean(data.followUser && data.rotateCourseUp !== false);
     var hasHeading = typeof data.heading === "number" && !isNaN(data.heading);
     updateUserMarker(data.userPosition, data.heading);
@@ -319,6 +378,10 @@ export const LEAFLET_HTML = `<!DOCTYPE html>
         break;
       case "setNavigation":
         setNavigation(msg);
+        break;
+      case "setOfflineTiles":
+        offlineTileBase = msg.baseUri || null;
+        ensureTileLayer();
         break;
       case "invalidate":
         map.invalidateSize();

@@ -1,8 +1,12 @@
 import * as Location from "expo-location";
+import { getBackgroundLocationConfig } from "./batteryManager";
 
 let _watchSub = null;
+let _headingSub = null;
+/** Ultima lettura bussola (trueHeading preferito). */
+let _compassHeading = null;
 let _listeners = new Set();
-/** @type {{ position: [number, number], heading: number | null, speed: number | null } | null} */
+/** @type {{ position: [number, number], heading: number | null, compassHeading: number | null, speed: number | null, accuracy: number | null } | null} */
 let _lastPosition = null;
 
 /** Coordinate [lat, lon] da snapshot posizione (compat legacy array). */
@@ -16,26 +20,49 @@ export function getLastKnownPosition() {
   return toCoords(_lastPosition);
 }
 
+function notifyListeners() {
+  if (!_lastPosition) return;
+  _listeners.forEach((cb) => {
+    try {
+      cb(_lastPosition);
+    } catch {
+      /* */
+    }
+  });
+}
+
 function notifyFromCoords(coords) {
-  const snap = {
+  _lastPosition = {
     position: [coords.latitude, coords.longitude],
     heading:
       typeof coords.heading === "number" && !Number.isNaN(coords.heading)
         ? coords.heading
         : null,
+    compassHeading:
+      typeof _compassHeading === "number" && !Number.isNaN(_compassHeading)
+        ? _compassHeading
+        : null,
     speed:
       typeof coords.speed === "number" && !Number.isNaN(coords.speed)
         ? coords.speed
         : null,
+    accuracy:
+      typeof coords.accuracy === "number" && !Number.isNaN(coords.accuracy)
+        ? coords.accuracy
+        : null,
   };
-  _lastPosition = snap;
-  _listeners.forEach((cb) => {
-    try {
-      cb(snap);
-    } catch {
-      /* */
-    }
-  });
+  notifyListeners();
+}
+
+function notifyCompass(headingDeg) {
+  if (typeof headingDeg !== "number" || Number.isNaN(headingDeg) || headingDeg < 0) {
+    return;
+  }
+  _compassHeading = ((headingDeg % 360) + 360) % 360;
+  if (_lastPosition) {
+    _lastPosition = { ..._lastPosition, compassHeading: _compassHeading };
+    notifyListeners();
+  }
 }
 
 export function subscribePosition(cb) {
@@ -87,6 +114,25 @@ export async function startWatching(options = {}) {
       notifyFromCoords(loc.coords);
     },
   );
+
+  // Bussola magnetica: usata a bassa velocità (fermo / passo lento).
+  if (!_headingSub && typeof Location.watchHeadingAsync === "function") {
+    try {
+      _headingSub = await Location.watchHeadingAsync((obj) => {
+        const trueH = obj?.trueHeading;
+        const magH = obj?.magHeading;
+        const h =
+          typeof trueH === "number" && trueH >= 0
+            ? trueH
+            : typeof magH === "number" && magH >= 0
+              ? magH
+              : null;
+        if (h != null) notifyCompass(h);
+      });
+    } catch {
+      _headingSub = null;
+    }
+  }
 }
 
 export function stopWatching() {
@@ -94,16 +140,23 @@ export function stopWatching() {
     _watchSub.remove();
     _watchSub = null;
   }
+  if (_headingSub) {
+    _headingSub.remove();
+    _headingSub = null;
+  }
 }
 
 export async function startBackgroundTracking(taskName) {
   const bgGranted = await requestBackgroundPermissions();
   if (!bgGranted) return false;
 
+  const bg = getBackgroundLocationConfig();
   await Location.startLocationUpdatesAsync(taskName, {
-    accuracy: Location.Accuracy.BestForNavigation,
-    timeInterval: 3000,
-    distanceInterval: 5,
+    accuracy: bg.accuracy,
+    timeInterval: bg.timeInterval,
+    distanceInterval: bg.distanceInterval,
+    deferredUpdatesInterval: bg.deferredUpdatesInterval,
+    deferredUpdatesDistance: bg.deferredUpdatesDistance,
     pausesUpdatesAutomatically: false,
     showsBackgroundLocationIndicator: true,
     foregroundService: {

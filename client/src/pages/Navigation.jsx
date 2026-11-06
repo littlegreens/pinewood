@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import L from "leaflet";
 import {
   Box,
@@ -38,18 +38,20 @@ import AppBanner from "../components/AppBanner.jsx";
 import { buildElevationProfilePath as buildElevationProfilePathBase } from "../utils/elevationProfilePath.js";
 
 const POCKET_INTRO_SKIP_KEY = "pinewood_skip_pocket_intro";
-const START_GATE_RADIUS_M = 300;
-const GPS_START_TIMEOUT_MS = 14000;
 const OFF_ROUTE_VIBRATE_PULSE_MS = 900;
 const OFF_ROUTE_VOICE_INTERVAL_MS = 3000;
 const NAV_RUNTIME_STATE_KEY_PREFIX = "pinewood_nav_runtime_";
 /** Soglia ortogonale minima dal tracciato (m). ~30 m: più reattivo del precedente 50 m; uscita più stretta per isteresi. */
-const OFF_ROUTE_ENTER_M = 30;
-const OFF_ROUTE_EXIT_M = 22;
-const OFF_ROUTE_ENTER_DELAY_MS = 4500;
-const OFF_ROUTE_EXIT_DELAY_MS = 2500;
+const OFF_ROUTE_ENTER_M = 32;
+const OFF_ROUTE_EXIT_M = 24;
+const OFF_ROUTE_ENTER_DELAY_MS = 5000;
+const OFF_ROUTE_EXIT_DELAY_MS = 3000;
+const GPS_MAX_ACCURACY_TRUST_M = 55;
+const OFF_ROUTE_ENTER_MIN_SAMPLES = 2;
 /** Aggiorna heading in React solo sopra questa soglia (°) per meno re-render / icon Leaflet. */
 const HEADING_PUBLISH_MIN_DELTA_DEG = 2;
+/** Sotto ~1.5 km/h: bussola magnetica; sopra: GPS bearing di movimento. */
+const COMPASS_MAX_SPEED_MS = 1.5 / 3.6;
 
 const OFFLINE_TRAIL_KEY_PREFIX = "pw_trail_";
 const LEGACY_OFFLINE_TRAIL_KEY_PREFIX = "pinewood_offline_trail_";
@@ -148,22 +150,25 @@ export default function Navigation() {
   const prevPosRef = useRef(null);
   const lastHeadingRef = useRef(null);
   const publishedHeadingRef = useRef(null);
+  const compassHeadingRef = useRef(null);
+  const lastSpeedRef = useRef(null);
   const pocketTouchStartY = useRef(null);
   const lockDragOffsetYRef = useRef(0);
   const [lockDragOffsetY, setLockDragOffsetY] = useState(0);
   const [lockDragging, setLockDragging] = useState(false);
   const wasOffRouteRef = useRef(false);
   const lastOffRoutePulseAtRef = useRef(0);
+  const lastOffRouteVoiceAtRef = useRef(0);
+  const positionAccuracyRef = useRef(null);
+  const offRouteEnterSamplesRef = useRef(0);
   const wakeLockRef = useRef(null);
   const pocketLayerRef = useRef(null);
   const [pocketIntroOpen, setPocketIntroOpen] = useState(false);
   const [pocketIntroSkipChecked, setPocketIntroSkipChecked] = useState(false);
   /** In tasca: schermo visivamente più scuro fino al primo tocco (non è la luminosità di sistema). */
   const [pocketVisualAwake, setPocketVisualAwake] = useState(false);
-  /** checking = verifica 300 m dal tracciato / GPS; ready = navigazione attiva */
-  const [startGate, setStartGate] = useState("checking");
-  const sessionAbortedRef = useRef(false);
-  const gpsTimeoutRef = useRef(null);
+  /** Navigazione attiva subito: niente gate distanza / GPS obbligatorio. */
+  const [startGate, setStartGate] = useState("ready");
   const [fullscreenActive, setFullscreenActive] = useState(false);
   const [chromeUnlocked, setChromeUnlocked] = useState(false);
   const runtimeHydratedRef = useRef(false);
@@ -217,25 +222,6 @@ export default function Navigation() {
     }
   }, [location.state]);
 
-  const abortStartSession = useCallback(async () => {
-    if (isOfflineLocalSession) return;
-    if (sessionAbortedRef.current) return;
-    sessionAbortedRef.current = true;
-    try {
-      await apiFetch(`/api/sessions/${sessionId}/finish`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          completion_pct: null,
-          deviations_count: 0,
-          actual_geom: [],
-        }),
-      });
-    } catch {
-      /* ignore */
-    }
-  }, [sessionId, isOfflineLocalSession]);
-
   function distanceMeters(a, b) {
     const toRad = (v) => (v * Math.PI) / 180;
     const R = 6371000;
@@ -270,19 +256,11 @@ export default function Navigation() {
     const cy = a.y + t * aby;
     const dx = p.x - cx;
     const dy = p.y - cy;
-    return { distance: Math.sqrt(dx * dx + dy * dy), t };
-  }
-
-  /** Distanza ortogonale minima dal punto alla polyline (qualsiasi segmento). */
-  function minDistanceToTrailMeters(point, trailLine) {
-    if (trailLine.length === 0) return Number.POSITIVE_INFINITY;
-    if (trailLine.length === 1) return distanceMeters(point, trailLine[0]);
-    let minD = Number.POSITIVE_INFINITY;
-    for (let i = 0; i < trailLine.length - 1; i += 1) {
-      const { distance } = pointProjectionOnSegment(point, trailLine[i], trailLine[i + 1]);
-      if (distance < minD) minD = distance;
-    }
-    return minD;
+    const closest = [
+      segA[0] + (segB[0] - segA[0]) * t,
+      segA[1] + (segB[1] - segA[1]) * t,
+    ];
+    return { distance: Math.sqrt(dx * dx + dy * dy), t, closest };
   }
 
   useEffect(() => {
@@ -295,7 +273,50 @@ export default function Navigation() {
     prevPosRef.current = null;
     lastHeadingRef.current = null;
     publishedHeadingRef.current = null;
+    compassHeadingRef.current = null;
+    lastSpeedRef.current = null;
     setUserHeading(null);
+
+    function onDeviceOrientation(ev) {
+      let compass = null;
+      if (typeof ev.webkitCompassHeading === "number" && !Number.isNaN(ev.webkitCompassHeading)) {
+        compass = ev.webkitCompassHeading;
+      } else if (typeof ev.alpha === "number" && !Number.isNaN(ev.alpha)) {
+        // absolute / standard: 0 = nord; alpha è clockwise da nord in absolute
+        compass = (360 - ev.alpha + 360) % 360;
+      }
+      if (compass == null) return;
+      compassHeadingRef.current = compass;
+      const speed = lastSpeedRef.current;
+      const movingFast =
+        typeof speed === "number" && !Number.isNaN(speed) && speed >= COMPASS_MAX_SPEED_MS;
+      if (movingFast) return;
+      const smoothed = smoothHeadingDeg(lastHeadingRef.current, compass);
+      lastHeadingRef.current = smoothed;
+      const pub = publishedHeadingRef.current;
+      if (pub == null || Math.abs(shortestAngleDeltaDeg(pub, smoothed)) >= HEADING_PUBLISH_MIN_DELTA_DEG) {
+        publishedHeadingRef.current = smoothed;
+        setUserHeading(smoothed);
+      }
+    }
+
+    let orientationAttached = false;
+    async function attachCompass() {
+      try {
+        const DOE = window.DeviceOrientationEvent;
+        if (DOE && typeof DOE.requestPermission === "function") {
+          const perm = await DOE.requestPermission();
+          if (perm !== "granted") return;
+        }
+      } catch {
+        return;
+      }
+      const absEvt = "ondeviceorientationabsolute" in window ? "deviceorientationabsolute" : "deviceorientation";
+      window.addEventListener(absEvt, onDeviceOrientation, true);
+      orientationAttached = absEvt;
+    }
+    void attachCompass();
+
     async function load() {
       if (cancelled) return;
       if (isOfflineLocalSession) {
@@ -335,19 +356,39 @@ export default function Navigation() {
           const lat = p.coords.latitude;
           const lon = p.coords.longitude;
           const pos = [lat, lon];
+          positionAccuracyRef.current =
+            typeof p.coords.accuracy === "number" && !Number.isNaN(p.coords.accuracy)
+              ? p.coords.accuracy
+              : null;
           let h = null;
           const speed = p.coords.speed;
-          if (
+          lastSpeedRef.current =
+            typeof speed === "number" && !Number.isNaN(speed) ? speed : null;
+          const movingFast =
+            typeof speed === "number" && !Number.isNaN(speed) && speed >= COMPASS_MAX_SPEED_MS;
+          if (movingFast) {
+            if (
+              typeof p.coords.heading === "number" &&
+              !Number.isNaN(p.coords.heading) &&
+              p.coords.heading >= 0
+            ) {
+              h = p.coords.heading;
+            } else if (prevPosRef.current) {
+              const moved = distanceMeters(prevPosRef.current, pos);
+              if (moved > 4) h = bearingDeg(prevPosRef.current, pos);
+            }
+          } else if (typeof compassHeadingRef.current === "number") {
+            h = compassHeadingRef.current;
+          } else if (
             typeof p.coords.heading === "number" &&
             !Number.isNaN(p.coords.heading) &&
+            p.coords.heading >= 0 &&
             (speed == null || speed > 0.35)
           ) {
             h = p.coords.heading;
           } else if (prevPosRef.current) {
             const moved = distanceMeters(prevPosRef.current, pos);
-            if (moved > 4) {
-              h = bearingDeg(prevPosRef.current, pos);
-            }
+            if (moved > 4) h = bearingDeg(prevPosRef.current, pos);
           }
           if (h == null) {
             h = lastHeadingRef.current;
@@ -378,6 +419,9 @@ export default function Navigation() {
       cancelled = true;
       unsub?.();
       if (watchId != null) navigator.geolocation.clearWatch(watchId);
+      if (orientationAttached) {
+        window.removeEventListener(orientationAttached, onDeviceOrientation, true);
+      }
     };
   }, [sessionId, navigate, isOfflineLocalSession, location.state]);
 
@@ -393,19 +437,39 @@ export default function Navigation() {
 
   const trailProjection = useMemo(() => {
     if (startGate !== "ready" || !position || line.length === 0) return null;
+    if (line.length === 1) {
+      return {
+        minSegDist: distanceMeters(position, line[0]),
+        bestAlong: 0,
+        nearestPoint: line[0],
+      };
+    }
     let minSegDist = Number.POSITIVE_INFINITY;
     let bestAlong = 0;
+    let nearestPoint = line[0];
     for (let i = 0; i < line.length - 1; i += 1) {
       const segLen = Math.max(0, cumulativeDistances[i + 1] - cumulativeDistances[i]);
-      const { distance, t } = pointProjectionOnSegment(position, line[i], line[i + 1]);
+      const { distance, t, closest } = pointProjectionOnSegment(position, line[i], line[i + 1]);
       const along = cumulativeDistances[i] + segLen * t;
       if (distance < minSegDist - 1 || (Math.abs(distance - minSegDist) <= 1 && along < bestAlong)) {
         minSegDist = distance;
         bestAlong = along;
+        nearestPoint = closest;
       }
     }
-    return { minSegDist, bestAlong };
+    return { minSegDist, bestAlong, nearestPoint };
   }, [startGate, position, line, cumulativeDistances]);
+
+  const offRouteReconnectLine = useMemo(() => {
+    if (!isOffRoute || !position || !trailProjection?.nearestPoint) return null;
+    return [position, trailProjection.nearestPoint];
+  }, [isOffRoute, position, trailProjection]);
+
+  const offRouteBannerText = useMemo(() => {
+    if (!isOffRoute || !trailProjection) return "";
+    const meters = Math.max(1, Math.round(trailProjection.minSegDist));
+    return t(lang, "navOffRouteAlertMeters").replace("{m}", String(meters));
+  }, [isOffRoute, trailProjection, lang]);
 
   useEffect(() => {
     if (!trailProjection) return;
@@ -413,44 +477,70 @@ export default function Navigation() {
     setUserDistanceM(bestAlong);
     const now = Date.now();
     const currentlyOff = wasOffRouteRef.current;
+    const accuracy = positionAccuracyRef.current;
+    const gpsTrustworthy =
+      accuracy == null || !Number.isFinite(accuracy) || accuracy <= GPS_MAX_ACCURACY_TRUST_M;
+
+    const repeatOffRouteAlerts = () => {
+      if (now - lastOffRoutePulseAtRef.current >= OFF_ROUTE_VIBRATE_PULSE_MS) {
+        lastOffRoutePulseAtRef.current = now;
+        vibrateOffRoutePulse();
+      }
+      if (now - lastOffRouteVoiceAtRef.current >= OFF_ROUTE_VOICE_INTERVAL_MS) {
+        lastOffRouteVoiceAtRef.current = now;
+        speakOffRouteMessage(t(lang, "navOffRouteVoice"), lang);
+      }
+      setIsOffRoute(true);
+    };
+
+    if (!gpsTrustworthy) {
+      if (currentlyOff) repeatOffRouteAlerts();
+      return;
+    }
+
     if (!currentlyOff && minSegDist > OFF_ROUTE_ENTER_M) {
+      offRouteEnterSamplesRef.current += 1;
       if (!pendingOffRouteSinceRef.current) pendingOffRouteSinceRef.current = now;
-      if (now - pendingOffRouteSinceRef.current >= OFF_ROUTE_ENTER_DELAY_MS) {
+      if (
+        offRouteEnterSamplesRef.current >= OFF_ROUTE_ENTER_MIN_SAMPLES &&
+        now - pendingOffRouteSinceRef.current >= OFF_ROUTE_ENTER_DELAY_MS
+      ) {
         wasOffRouteRef.current = true;
         pendingOffRouteSinceRef.current = null;
         pendingOnRouteSinceRef.current = null;
+        offRouteEnterSamplesRef.current = 0;
         setIsOffRoute(true);
         lastOffRoutePulseAtRef.current = now;
+        lastOffRouteVoiceAtRef.current = now;
         setDeviationsCount((v) => v + 1);
         playOffRouteBeep();
         speakOffRouteMessage(t(lang, "navOffRouteVoice"), lang);
         vibrateOffRoute();
       }
     } else if (currentlyOff && minSegDist < OFF_ROUTE_EXIT_M) {
+      offRouteEnterSamplesRef.current = 0;
       if (!pendingOnRouteSinceRef.current) pendingOnRouteSinceRef.current = now;
       if (now - pendingOnRouteSinceRef.current >= OFF_ROUTE_EXIT_DELAY_MS) {
         wasOffRouteRef.current = false;
         pendingOnRouteSinceRef.current = null;
         pendingOffRouteSinceRef.current = null;
         lastOffRoutePulseAtRef.current = 0;
+        lastOffRouteVoiceAtRef.current = 0;
         setIsOffRoute(false);
       }
     } else if (currentlyOff) {
+      offRouteEnterSamplesRef.current = 0;
       pendingOnRouteSinceRef.current = null;
-      if (now - lastOffRoutePulseAtRef.current >= OFF_ROUTE_VIBRATE_PULSE_MS) {
-        lastOffRoutePulseAtRef.current = now;
-        vibrateOffRoutePulse();
-      }
-      setIsOffRoute(true);
+      repeatOffRouteAlerts();
     } else {
+      offRouteEnterSamplesRef.current = 0;
       pendingOffRouteSinceRef.current = null;
       setIsOffRoute(false);
     }
   }, [trailProjection, lang]);
 
   useEffect(() => {
-    setStartGate("checking");
-    sessionAbortedRef.current = false;
+    setStartGate("ready");
     setPocketMode(false);
     publishedHeadingRef.current = null;
     setActualTrack([]);
@@ -459,56 +549,10 @@ export default function Navigation() {
     wasOffRouteRef.current = false;
     pendingOffRouteSinceRef.current = null;
     pendingOnRouteSinceRef.current = null;
+    offRouteEnterSamplesRef.current = 0;
+    lastOffRouteVoiceAtRef.current = 0;
     setUserDistanceM(null);
   }, [sessionId]);
-
-  useEffect(() => {
-    if (startGate !== "checking") {
-      if (gpsTimeoutRef.current != null) {
-        clearTimeout(gpsTimeoutRef.current);
-        gpsTimeoutRef.current = null;
-      }
-      return;
-    }
-    gpsTimeoutRef.current = window.setTimeout(() => {
-      gpsTimeoutRef.current = null;
-      setStartGate((prev) => {
-        if (prev !== "checking") return prev;
-        void abortStartSession();
-        return "blocked_gps";
-      });
-    }, GPS_START_TIMEOUT_MS);
-    return () => {
-      if (gpsTimeoutRef.current != null) {
-        clearTimeout(gpsTimeoutRef.current);
-        gpsTimeoutRef.current = null;
-      }
-    };
-  }, [startGate, sessionId, abortStartSession]);
-
-  useEffect(() => {
-    if (startGate !== "checking") return;
-    if (!line.length || !position) return;
-    if (gpsTimeoutRef.current != null) {
-      clearTimeout(gpsTimeoutRef.current);
-      gpsTimeoutRef.current = null;
-    }
-    const d = minDistanceToTrailMeters(position, line);
-    if (d > START_GATE_RADIUS_M) {
-      void abortStartSession().then(() => setStartGate("blocked_too_far"));
-    } else {
-      setStartGate("ready");
-    }
-  }, [line, position, startGate, abortStartSession]);
-
-  useEffect(() => {
-    if (!isOffRoute) return;
-    if (startGate !== "ready") return;
-    const id = window.setInterval(() => {
-      speakOffRouteMessage(t(lang, "navOffRouteVoice"), lang);
-    }, OFF_ROUTE_VOICE_INTERVAL_MS);
-    return () => clearInterval(id);
-  }, [isOffRoute, lang, startGate]);
 
   useEffect(() => {
     if (startGate !== "ready") {
@@ -579,9 +623,8 @@ export default function Navigation() {
         lastHeadingRef.current = parsed.userHeading;
         publishedHeadingRef.current = parsed.userHeading;
       }
-      if (typeof parsed.startGate === "string" && parsed.startGate !== "checking") {
-        setStartGate(parsed.startGate);
-      }
+      // Gate distanza rimosso: forza sempre ready anche su snapshot vecchi.
+      setStartGate("ready");
       if (typeof parsed.pocketMode === "boolean") setPocketMode(parsed.pocketMode);
       if (typeof parsed.chromeUnlocked === "boolean") setChromeUnlocked(parsed.chromeUnlocked);
     } catch {
@@ -804,11 +847,6 @@ export default function Navigation() {
       };
     }
     return { pathname: backToOrigin, state: null };
-  }
-
-  function handleForcedBackFromStartGate() {
-    const target = buildExitNavigationTarget();
-    navigate(target.pathname, { replace: true, state: target.state });
   }
 
   async function finishSession() {
@@ -1199,6 +1237,18 @@ export default function Navigation() {
                   pathOptions={{ color: "#c9a84c", weight: 3, opacity: 0.9, className: "pinewood-fixed-stroke" }}
                 />
               )}
+              {offRouteReconnectLine && (
+                <Polyline
+                  positions={offRouteReconnectLine}
+                  pathOptions={{
+                    color: "#ff6b00",
+                    weight: 3,
+                    opacity: 0.95,
+                    dashArray: "10 8",
+                    className: "pinewood-fixed-stroke",
+                  }}
+                />
+              )}
               {position && <NavigationUserMarker position={position} headingDeg={userHeading} />}
             </MapContainer>
           </Box>
@@ -1262,31 +1312,6 @@ export default function Navigation() {
         </Stack>
       )}
 
-      <Dialog
-        open={startGate === "blocked_too_far" || startGate === "blocked_gps"}
-        disableEscapeKeyDown
-        onClose={() => {}}
-        maxWidth="xs"
-        fullWidth
-        slotProps={{
-          backdrop: { sx: { backgroundColor: "rgba(0,0,0,0.78)" } },
-        }}
-      >
-        {startGate === "blocked_gps" && (
-          <AppDialogTitle title={t(lang, "navStartBlockedTitle")} />
-        )}
-        <DialogContent sx={startGate === "blocked_too_far" ? { pt: 3 } : undefined}>
-          <Typography sx={{ color: "text.secondary", lineHeight: 1.55 }}>
-            {startGate === "blocked_gps" ? t(lang, "navStartNoGps") : t(lang, "navStartTooFar")}
-          </Typography>
-        </DialogContent>
-        <DialogActions sx={{ px: 2, pb: 2, pt: 0 }}>
-          <Button variant="contained" color="primary" fullWidth onClick={handleForcedBackFromStartGate}>
-            {t(lang, "navStartGoBack")}
-          </Button>
-        </DialogActions>
-      </Dialog>
-
       <Dialog open={pocketIntroOpen} onClose={cancelPocketIntro} fullWidth maxWidth="sm">
         <AppDialogTitle title={t(lang, "pocketIntroTitle")} />
         <DialogContent>
@@ -1320,7 +1345,7 @@ export default function Navigation() {
       </Dialog>
 
       <AppBanner
-        message={startGate === "ready" && isOffRoute ? t(lang, "navOffRouteAlertShort") : ""}
+        message={startGate === "ready" ? offRouteBannerText : ""}
         type="warning"
         durationMs={0}
         top={

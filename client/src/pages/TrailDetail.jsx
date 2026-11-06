@@ -45,6 +45,7 @@ import { detectLanguage, t } from "../services/i18n.js";
 import { apiFetch } from "../services/api.js";
 import { getLastKnownLocation, requestQuickLocation } from "../services/locationTracker.js";
 import { buildElevationProfilePath } from "../utils/elevationProfilePath.js";
+import { requestCompassPermission } from "../utils/compassPermission.js";
 import ReactQuill from "react-quill";
 import "react-quill/dist/quill.snow.css";
 
@@ -98,21 +99,29 @@ function lat2tile(lat, zoom) {
   return Math.floor(((1 - Math.log(Math.tan(rad) + 1 / Math.cos(rad)) / Math.PI) / 2) * 2 ** zoom);
 }
 
+function metersPerTile(lat, zoom) {
+  return (40075016.686 * Math.cos((lat * Math.PI) / 180)) / 2 ** zoom;
+}
+
+/** Corridor ~1.5 km intorno alla traccia; tile OSM gratis in Cache API (PWA). */
 async function warmupTilesForLine(line, { installedPwa = false } = {}) {
   if (!("caches" in window) || !Array.isArray(line) || line.length === 0) return { ok: false };
   const cache = await caches.open("pinewood-osm-tiles");
   const subs = ["a", "b", "c"];
   const zooms = installedPwa ? [13, 14, 15, 16] : [13, 14, 15];
-  const maxTiles = installedPwa ? 220 : 120;
+  const maxTiles = installedPwa ? 700 : 280;
+  const bufferM = 1500;
   const tileUrls = new Set();
-  const stride = Math.max(1, Math.floor(line.length / 60));
-  for (let i = 0; i < line.length; i += stride) {
+  const stride = Math.max(1, Math.floor(line.length / 100));
+  outer: for (let i = 0; i < line.length; i += stride) {
     const [lat, lon] = line[i];
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
     for (const z of zooms) {
       const x = lon2tile(lon, z);
       const y = lat2tile(lat, z);
-      for (let dx = -1; dx <= 1; dx += 1) {
-        for (let dy = -1; dy <= 1; dy += 1) {
+      const radius = Math.max(1, Math.min(4, Math.ceil(bufferM / metersPerTile(lat, z))));
+      for (let dx = -radius; dx <= radius; dx += 1) {
+        for (let dy = -radius; dy <= radius; dy += 1) {
           const sub = subs[Math.abs(x + y + dx + dy) % subs.length];
           tileUrls.add(
             OSM_TILE_TEMPLATE.replace("{s}", sub)
@@ -120,13 +129,10 @@ async function warmupTilesForLine(line, { installedPwa = false } = {}) {
               .replace("{x}", String(x + dx))
               .replace("{y}", String(y + dy))
           );
-          if (tileUrls.size >= maxTiles) break;
+          if (tileUrls.size >= maxTiles) break outer;
         }
-        if (tileUrls.size >= maxTiles) break;
       }
-      if (tileUrls.size >= maxTiles) break;
     }
-    if (tileUrls.size >= maxTiles) break;
   }
 
   let okCount = 0;
@@ -138,6 +144,7 @@ async function warmupTilesForLine(line, { installedPwa = false } = {}) {
         okCount += 1;
         continue;
       }
+      // OSM non espone CORS: no-cors → risposta opaque, riusabile via Service Worker / Cache API.
       const resp = await fetch(url, { mode: "no-cors", cache: "no-store" });
       await cache.put(url, resp.clone());
       okCount += 1;
@@ -511,6 +518,8 @@ export default function TrailDetail() {
 
     setPlayStarting(true);
     try {
+      // iOS: permesso bussola nel gesto Play → freccia orientata anche da fermo.
+      void requestCompassPermission();
       const initialPosition = getLastKnownLocation();
       // Keep location tracker warm, but never block the transition on GPS.
       void requestQuickLocation({ timeoutMs: 3500 });
