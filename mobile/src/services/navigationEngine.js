@@ -1,9 +1,7 @@
 import * as Haptics from "expo-haptics";
-import * as Speech from "expo-speech";
 import * as TaskManager from "expo-task-manager";
 import { apiFetch } from "./api";
 import { distanceMeters, bearingDeg } from "../utils/geo";
-import { t } from "./i18n";
 
 export const NAV_BG_TASK_NAME = "pinewood-nav-background-location";
 
@@ -100,19 +98,10 @@ function computeUserProjectionAlongTrail(userPos, trailLine, cumDist) {
   return { minDist: minSegDist, along: bestAlong, nearestPoint };
 }
 
-function speakOffRoute(lang) {
-  const voiceLang = lang === "it" ? "it-IT" : "en-US";
-  Speech.speak(t(lang, "navOffRouteVoice"), { language: voiceLang, rate: 1 });
-}
-
 function repeatOffRouteAlerts(now) {
   if (now - runtime.lastOffRoutePulse >= OFF_ROUTE_VIBRATE_PULSE_MS) {
     runtime.lastOffRoutePulse = now;
     pulseOffRouteHaptics();
-  }
-  if (now - runtime.lastOffRouteVoice >= OFF_ROUTE_VOICE_INTERVAL_MS) {
-    runtime.lastOffRouteVoice = now;
-    speakOffRoute(runtime.lang);
   }
   runtime.listeners.onOffRouteChange?.(true, runtime.deviationsCount);
 }
@@ -286,7 +275,6 @@ export function processNavigationPosition(
       runtime.deviationsCount += 1;
       runtime.listeners.onOffRouteChange?.(true, runtime.deviationsCount);
       pulseOffRouteHaptics();
-      speakOffRoute(runtime.lang);
     }
   } else if (gpsTrustworthy && currentlyOff && minDist < OFF_ROUTE_EXIT_M) {
     runtime.offRouteEnterSamples = 0;

@@ -1,45 +1,27 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import L from "leaflet";
-import {
-  Box,
-  Button,
-  Checkbox,
-  Dialog,
-  DialogActions,
-  DialogContent,
-  FormControlLabel,
-  IconButton,
-  Stack,
-  Typography,
-} from "@mui/material";
-import LockOutlinedIcon from "@mui/icons-material/LockOutlined";
-import MyLocationIcon from "@mui/icons-material/MyLocation";
+import { Box, IconButton, Typography } from "@mui/material";
 import StopIcon from "@mui/icons-material/Stop";
-import WarningAmberRoundedIcon from "@mui/icons-material/WarningAmberRounded";
-import { MapContainer, Marker, Polyline, TileLayer, useMap, useMapEvents } from "react-leaflet";
+import { MapContainer, Marker, Polyline, TileLayer, useMap } from "react-leaflet";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { detectLanguage, t } from "../services/i18n.js";
 import { apiFetch } from "../services/api.js";
 import {
   playOffRouteBeep,
-  speakOffRouteMessage,
   vibrateOffRoute,
   vibrateOffRoutePulse,
 } from "../services/navigationAlerts.js";
-import { requestQuickLocation, subscribeLocation } from "../services/locationTracker.js";
+import { subscribeLocation } from "../services/locationTracker.js";
 import {
   exitDocumentFullscreen,
   isDocumentFullscreenActive,
   lockPortraitOrientation,
-  requestDocumentFullscreen,
 } from "../utils/screenChrome.js";
-import AppDialogTitle from "../components/AppDialogTitle.jsx";
 import AppBanner from "../components/AppBanner.jsx";
+import WaypointMarkers from "../components/WaypointMarkers.jsx";
 import { buildElevationProfilePath as buildElevationProfilePathBase } from "../utils/elevationProfilePath.js";
 
-const POCKET_INTRO_SKIP_KEY = "pinewood_skip_pocket_intro";
 const OFF_ROUTE_VIBRATE_PULSE_MS = 900;
-const OFF_ROUTE_VOICE_INTERVAL_MS = 3000;
 const NAV_RUNTIME_STATE_KEY_PREFIX = "pinewood_nav_runtime_";
 /** Soglia ortogonale minima dal tracciato (m). ~30 m: più reattivo del precedente 50 m; uscita più stretta per isteresi. */
 const OFF_ROUTE_ENTER_M = 32;
@@ -61,15 +43,6 @@ function MapReadyBridge({ onReady }) {
   useEffect(() => {
     onReady(map);
   }, [map, onReady]);
-  return null;
-}
-
-function MapInteractionBridge({ onMapClick }) {
-  useMapEvents({
-    click(e) {
-      onMapClick?.(e.latlng);
-    },
-  });
   return null;
 }
 
@@ -216,8 +189,9 @@ export default function Navigation() {
 
   useLayoutEffect(() => {
     window.scrollTo(0, 0);
+    // Play a tutto schermo app, ma URL browser resta (niente document fullscreen / pocket lock).
+    exitDocumentFullscreen();
     if (location.state?.fromTrailDetail) {
-      requestDocumentFullscreen();
       lockPortraitOrientation();
     }
   }, [location.state]);
@@ -486,10 +460,6 @@ export default function Navigation() {
         lastOffRoutePulseAtRef.current = now;
         vibrateOffRoutePulse();
       }
-      if (now - lastOffRouteVoiceAtRef.current >= OFF_ROUTE_VOICE_INTERVAL_MS) {
-        lastOffRouteVoiceAtRef.current = now;
-        speakOffRouteMessage(t(lang, "navOffRouteVoice"), lang);
-      }
       setIsOffRoute(true);
     };
 
@@ -514,7 +484,6 @@ export default function Navigation() {
         lastOffRouteVoiceAtRef.current = now;
         setDeviationsCount((v) => v + 1);
         playOffRouteBeep();
-        speakOffRouteMessage(t(lang, "navOffRouteVoice"), lang);
         vibrateOffRoute();
       }
     } else if (currentlyOff && minSegDist < OFF_ROUTE_EXIT_M) {
@@ -591,16 +560,10 @@ export default function Navigation() {
   }, [sessionId, startGate]);
 
   useEffect(() => {
-    if (startGate !== "ready" || pocketMode || chromeUnlocked) return;
-    requestDocumentFullscreen();
+    if (startGate !== "ready") return;
+    exitDocumentFullscreen();
     lockPortraitOrientation();
-  }, [startGate, pocketMode, chromeUnlocked]);
-
-  useEffect(() => {
-    if (startGate !== "ready" || pocketMode) return;
-    requestDocumentFullscreen();
-    lockPortraitOrientation();
-  }, [startGate, pocketMode]);
+  }, [startGate]);
 
   useEffect(() => {
     runtimeHydratedRef.current = false;
@@ -768,36 +731,6 @@ export default function Navigation() {
     centeredOnStartRef.current = true;
   }, [mapInstance, startGate, position, pocketMode]);
 
-  /** Course-up: direzione di marcia verso l'alto (non nord fisso in alto). */
-  useEffect(() => {
-    if (!mapInstance || startGate !== "ready" || pocketMode) return;
-    const pane = mapInstance.getPane?.("mapPane");
-    if (!pane) return;
-
-    const applyCourseUp = () => {
-      if (typeof userHeading !== "number" || Number.isNaN(userHeading) || !position) {
-        pane.style.transform = "";
-        pane.style.transformOrigin = "";
-        return;
-      }
-      const pt = mapInstance.latLngToContainerPoint(position);
-      pane.style.transformOrigin = `${pt.x}px ${pt.y}px`;
-      pane.style.transform = `rotate(${-userHeading}deg)`;
-    };
-
-    applyCourseUp();
-    mapInstance.on("move", applyCourseUp);
-    mapInstance.on("zoom", applyCourseUp);
-    mapInstance.on("zoomend", applyCourseUp);
-    return () => {
-      mapInstance.off("move", applyCourseUp);
-      mapInstance.off("zoom", applyCourseUp);
-      mapInstance.off("zoomend", applyCourseUp);
-      pane.style.transform = "";
-      pane.style.transformOrigin = "";
-    };
-  }, [mapInstance, startGate, pocketMode, userHeading, position]);
-
   useEffect(() => {
     if (startGate !== "ready") return;
     if (!position) return;
@@ -939,23 +872,11 @@ export default function Navigation() {
   }
 
   function requestPocketMode() {
-    if (startGate !== "ready") return;
-    if (localStorage.getItem(POCKET_INTRO_SKIP_KEY) === "1") {
-      setPocketMode(true);
-      requestDocumentFullscreen();
-      return;
-    }
-    setPocketIntroSkipChecked(false);
-    setPocketIntroOpen(true);
+    /* pocket mode disabilitato */
   }
 
   function confirmPocketIntro() {
-    if (pocketIntroSkipChecked) {
-      localStorage.setItem(POCKET_INTRO_SKIP_KEY, "1");
-    }
     setPocketIntroOpen(false);
-    setPocketMode(true);
-    requestDocumentFullscreen();
   }
 
   function cancelPocketIntro() {
@@ -1068,16 +989,14 @@ export default function Navigation() {
         height: "100dvh",
         maxHeight: "100dvh",
         overflow: "hidden",
-        bgcolor: pocketMode ? "#000" : "background.default",
+        bgcolor: "background.default",
         zIndex: 1000,
         display: "flex",
         flexDirection: "column",
-        overscrollBehaviorX: "none",
-        touchAction: pocketMode ? "none" : "manipulation",
+        overscrollBehavior: "none",
       }}
     >
-      {!pocketMode ? (
-        <>
+      <>
           <Box
             sx={{
               flexShrink: 0,
@@ -1103,116 +1022,47 @@ export default function Navigation() {
             )}
           </Box>
 
-          <Box sx={{ width: "100%", flex: 1, position: "relative", minHeight: 0 }}>
+          <Box
+            sx={{
+              width: "100%",
+              flex: 1,
+              position: "relative",
+              minHeight: 0,
+              touchAction: "none",
+              "& .leaflet-container": { touchAction: "none", width: "100%", height: "100%" },
+            }}
+          >
             {startGate === "ready" && (
-            <Box
-              sx={{
-                position: "absolute",
-                top: "max(10px, env(safe-area-inset-top))",
-                left: 10,
-                right: 10,
-                zIndex: 1200,
-                display: "flex",
-                alignItems: "flex-start",
-                justifyContent: "flex-end",
-                gap: 1,
-                pointerEvents: "none",
-              }}
-            >
-              <IconButton
-                onClick={centerOnUser}
+              <Box
                 sx={{
-                  pointerEvents: "auto",
-                  bgcolor: "rgba(255,255,255,0.94)",
-                  color: "#111",
-                  p: 0.55,
-                  border: "1px solid rgba(0,0,0,0.08)",
-                  boxShadow: "0 2px 10px rgba(0,0,0,0.12)",
-                  "&:hover": { bgcolor: "#fff" },
-                }}
-                aria-label="Centra su di me"
-              >
-                <MyLocationIcon fontSize="small" />
-              </IconButton>
-            </Box>
-            )}
-
-            {startGate === "ready" && (
-            <Box
-              sx={{
-                position: "fixed",
-                left: 0,
-                right: 0,
-                bottom: "max(10px, env(safe-area-inset-bottom))",
-                zIndex: 1400,
-                display: "flex",
-                justifyContent: "space-between",
-                alignItems: "center",
-                pl: "max(14px, env(safe-area-inset-left))",
-                pr: "max(14px, env(safe-area-inset-right))",
-                pointerEvents: "none",
-              }}
-            >
-              <IconButton
-                onClick={finishSession}
-                aria-label={t(lang, "completeTrail")}
-                sx={{
-                  pointerEvents: "auto",
-                  width: 58,
-                  height: 58,
-                  borderRadius: "50%",
-                  bgcolor: "#c62828",
-                  color: "#fff",
-                  border: "none",
-                  boxShadow: "0 4px 16px rgba(0,0,0,0.28)",
-                  "&:hover": { bgcolor: "#a31515" },
+                  position: "absolute",
+                  left: 0,
+                  right: 0,
+                  bottom: "max(14px, env(safe-area-inset-bottom))",
+                  zIndex: 1400,
+                  display: "flex",
+                  justifyContent: "center",
+                  pointerEvents: "none",
                 }}
               >
-                <StopIcon sx={{ fontSize: 30, color: "#fff" }} />
-              </IconButton>
-              <IconButton
-                onTouchStart={onUnlockTouchStart}
-                onTouchMove={onUnlockTouchMove}
-                onTouchEnd={onUnlockTouchEnd}
-                aria-label={t(lang, "lockModeActive")}
-                sx={{
-                  pointerEvents: "auto",
-                  width: 58,
-                  height: 58,
-                  borderRadius: "50%",
-                  bgcolor: "#111",
-                  color: "#fff",
-                  border: "none",
-                  boxShadow: "0 4px 16px rgba(0,0,0,0.28)",
-                  transform: `translateY(${unlockDragOffsetY}px)`,
-                  transition: unlockDragging ? "none" : "transform 180ms ease-out",
-                  "&:hover": { bgcolor: "#222" },
-                }}
-              >
-                <LockOutlinedIcon sx={{ fontSize: 28, color: "#fff" }} />
-              </IconButton>
-              <IconButton
-                onClick={requestPocketMode}
-                aria-label={t(lang, "pocketMode")}
-                sx={{
-                  pointerEvents: "auto",
-                  width: 58,
-                  height: 58,
-                  borderRadius: "50%",
-                  bgcolor: "#111",
-                  color: "#fff",
-                  border: "none",
-                  boxShadow: "0 4px 16px rgba(0,0,0,0.28)",
-                  "&:hover": { bgcolor: "#222" },
-                }}
-              >
-                <img
-                  src="/mobile_block.svg"
-                  alt={t(lang, "pocketMode")}
-                  style={{ width: 28, height: 28, filter: "invert(1) brightness(1.15)" }}
-                />
-              </IconButton>
-            </Box>
+                <IconButton
+                  onClick={finishSession}
+                  aria-label={t(lang, "completeTrail")}
+                  sx={{
+                    pointerEvents: "auto",
+                    width: 58,
+                    height: 58,
+                    borderRadius: "50%",
+                    bgcolor: "#c62828",
+                    color: "#fff",
+                    border: "none",
+                    boxShadow: "0 4px 16px rgba(0,0,0,0.28)",
+                    "&:hover": { bgcolor: "#a31515" },
+                  }}
+                >
+                  <StopIcon sx={{ fontSize: 30, color: "#fff" }} />
+                </IconButton>
+              </Box>
             )}
 
             <MapContainer
@@ -1220,10 +1070,14 @@ export default function Navigation() {
               zoom={14}
               style={{ width: "100%", height: "100%" }}
               zoomControl={false}
-              doubleClickZoom={false}
+              dragging
+              touchZoom
+              doubleClickZoom
+              scrollWheelZoom
+              boxZoom={false}
+              keyboard={false}
             >
               <MapReadyBridge onReady={setMapInstance} />
-              <MapInteractionBridge onMapClick={onMapClickZoom} />
               <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" attribution="" />
               {showTrailLine && line.length > 1 && (
                 <Polyline
@@ -1249,110 +1103,17 @@ export default function Navigation() {
                   }}
                 />
               )}
+              <WaypointMarkers waypoints={waypoints} />
               {position && <NavigationUserMarker position={position} headingDeg={userHeading} />}
             </MapContainer>
           </Box>
         </>
-      ) : (
-        <Stack
-          ref={pocketLayerRef}
-          onTouchStart={() => setPocketVisualAwake(true)}
-          onPointerDown={() => setPocketVisualAwake(true)}
-          sx={{
-            position: "fixed",
-            inset: 0,
-            zIndex: 2100,
-            minHeight: "100dvh",
-            maxHeight: "100dvh",
-            alignItems: "center",
-            justifyContent: "space-between",
-            color: "#fff",
-            pt: "max(6vh, env(safe-area-inset-top))",
-            pb: "max(6vh, calc(env(safe-area-inset-bottom) + 16px))",
-            px: 0,
-            overscrollBehavior: "none",
-            touchAction: "none",
-            width: "100%",
-            bgcolor: "#000",
-            WebkitTouchCallout: "none",
-            userSelect: "none",
-            filter: pocketVisualAwake ? "none" : "brightness(0.42)",
-            transition: "filter 280ms ease-out",
-          }}
-        >
-          <img
-            src="/logo.svg"
-            alt="Pinewood"
-            style={{ width: 250, opacity: 1, filter: "brightness(0) invert(1)" }}
-          />
-          <Box sx={{ display: "grid", placeItems: "center", mb: "5vh" }}>
-            <Box
-              onTouchStart={onLockTouchStart}
-              onTouchMove={onLockTouchMove}
-              onTouchEnd={onLockTouchEnd}
-              sx={{
-                width: 74,
-                height: 74,
-                borderRadius: "50%",
-                border: "2px solid rgba(255,255,255,0.92)",
-                bgcolor: "transparent",
-                display: "grid",
-                placeItems: "center",
-                transform: `translateY(${lockDragOffsetY - 8}px)`,
-                transition: lockDragging ? "none" : "transform 180ms ease-out, background-color 0.25s, border-color 0.25s",
-                touchAction: "none",
-              }}
-            >
-              <LockOutlinedIcon sx={{ fontSize: 38, opacity: 0.95, color: "#fff" }} />
-            </Box>
-            <Typography sx={{ mt: 1.1, fontSize: "0.8rem", opacity: 0.9, fontWeight: 400 }}>
-              {t(lang, "unlockBySwipe")}
-            </Typography>
-          </Box>
-        </Stack>
-      )}
-
-      <Dialog open={pocketIntroOpen} onClose={cancelPocketIntro} fullWidth maxWidth="sm">
-        <AppDialogTitle title={t(lang, "pocketIntroTitle")} />
-        <DialogContent>
-          <Typography sx={{ color: "text.secondary", lineHeight: 1.55, whiteSpace: "pre-line" }}>
-            {t(lang, "pocketIntroBody")}
-          </Typography>
-          <FormControlLabel
-            sx={{
-              mt: 2,
-              alignItems: "center",
-              "& .MuiFormControlLabel-label": { lineHeight: 1.25 },
-            }}
-            control={
-              <Checkbox
-                checked={pocketIntroSkipChecked}
-                onChange={(e) => setPocketIntroSkipChecked(e.target.checked)}
-                color="primary"
-              />
-            }
-            label={t(lang, "pocketIntroDontShowAgain")}
-          />
-        </DialogContent>
-        <DialogActions sx={{ px: 3, pb: 2 }}>
-          <Button onClick={cancelPocketIntro} color="inherit">
-            {t(lang, "cancel")}
-          </Button>
-          <Button onClick={confirmPocketIntro} variant="contained" color="primary">
-            {t(lang, "pocketIntroConfirm")}
-          </Button>
-        </DialogActions>
-      </Dialog>
 
       <AppBanner
         message={startGate === "ready" ? offRouteBannerText : ""}
         type="warning"
         durationMs={0}
-        top={
-          pocketMode
-            ? "max(20px, calc(env(safe-area-inset-top) + 10px))"
-            : "max(148px, calc(env(safe-area-inset-top) + 108px))"
-        }
+        top="max(148px, calc(env(safe-area-inset-top) + 108px))"
         sx={{ zIndex: 3200 }}
       />
     </Box>

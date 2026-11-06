@@ -35,6 +35,22 @@ export async function parseGpxFile(filePath) {
     throw new Error("Il GPX non contiene abbastanza punti validi");
   }
 
+  const waypoints = [];
+  for (const w of toArray(data?.gpx?.wpt)) {
+    const lat = Number(w.lat);
+    const lon = Number(w.lon);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+    const name = String(w.name || w.desc || "").trim();
+    const sym = String(w.sym || w.type || "").trim();
+    waypoints.push({
+      lat,
+      lon,
+      label: name || null,
+      type: classifyWaypointType(sym, name),
+      elevation_m: Number.isFinite(Number(w.ele)) ? Number(w.ele) : null,
+    });
+  }
+
   const distanceKm = computeDistanceKm(points);
   const svgPreview = generateSvg(points);
   const start = points[0];
@@ -42,12 +58,21 @@ export async function parseGpxFile(filePath) {
 
   return {
     points,
+    waypoints,
     distanceKm,
     svgPreview,
     start,
     end,
     elevation: buildElevationStats(points),
   };
+}
+
+function classifyWaypointType(sym, name) {
+  const s = `${sym} ${name}`.toLowerCase();
+  if (/(water|acqua|fonte|spring|fountain|drink)/.test(s)) return "water";
+  if (/(shelter|rifugio|bivacco|hut|cabin|bivouac|refuge)/.test(s)) return "shelter";
+  if (/(viewpoint|belvedere|panorama|vista|peak|summit|lookout)/.test(s)) return "viewpoint";
+  return null;
 }
 
 export function buildGeoJsonLineString(points) {

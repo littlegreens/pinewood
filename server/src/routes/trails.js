@@ -183,9 +183,27 @@ router.post("/upload", authMiddleware, upload.single("file"), async (req, res) =
       ]
     );
 
+    const trailId = result.rows[0].id;
+    if (Array.isArray(parsed.waypoints) && parsed.waypoints.length > 0) {
+      for (const wp of parsed.waypoints) {
+        if (!wp.type) continue;
+        await pool.query(
+          `INSERT INTO waypoints (trail_id, geom, elevation_m, type, label)
+           VALUES (
+             $1,
+             ST_SetSRID(ST_MakePoint($2, $3), 4326),
+             $4,
+             $5,
+             $6
+           )`,
+          [trailId, wp.lon, wp.lat, wp.elevation_m, wp.type, wp.label]
+        );
+      }
+    }
+
     await elevationQueue.add(
       "fetch_elevation",
-      { trailId: result.rows[0].id },
+      { trailId },
       {
         attempts: 3,
         backoff: { type: "exponential", delay: 5000 },
@@ -194,7 +212,7 @@ router.post("/upload", authMiddleware, upload.single("file"), async (req, res) =
       }
     );
 
-    return res.status(201).json({ trailId: result.rows[0].id, status: result.rows[0].parse_status });
+    return res.status(201).json({ trailId, status: result.rows[0].parse_status });
   } catch (error) {
     return res.status(400).json({ error: error.message || "Errore parsing GPX" });
   }
@@ -291,12 +309,23 @@ router.get("/:id", optionalAuthMiddleware, async (req, res) => {
      ORDER BY created_at ASC`,
     [trail.id]
   );
+  const waypointsRes = await pool.query(
+    `SELECT id, type, label, elevation_m, distance_from_start_m, ST_AsGeoJSON(geom) AS geom_geojson
+     FROM waypoints
+     WHERE trail_id = $1
+     ORDER BY distance_from_start_m ASC NULLS LAST, label ASC`,
+    [trail.id]
+  );
   return res.json({
     ...trail,
     geom_geojson: trail.geom_geojson ? JSON.parse(trail.geom_geojson) : null,
     start_point_geojson: trail.start_point_geojson ? JSON.parse(trail.start_point_geojson) : null,
     end_point_geojson: trail.end_point_geojson ? JSON.parse(trail.end_point_geojson) : null,
     parkings: parkingsRes.rows,
+    waypoints: waypointsRes.rows.map((wp) => ({
+      ...wp,
+      geom_geojson: wp.geom_geojson ? JSON.parse(wp.geom_geojson) : null,
+    })),
   });
 });
 
