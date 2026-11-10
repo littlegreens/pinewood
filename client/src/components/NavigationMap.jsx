@@ -2,6 +2,19 @@ import { useEffect, useRef, useState } from "react";
 import maplibregl from "maplibre-gl";
 import maplibreWorkerUrl from "maplibre-gl/dist/maplibre-gl-csp-worker.js?url";
 import "maplibre-gl/dist/maplibre-gl.css";
+import {
+  normalizeWaypoint,
+  poiDomBadgeHtml,
+  poiStackDomBadgeHtml,
+  POI_TYPES,
+} from "../utils/poiIcons.js";
+import {
+  dedupeSameTypeNearby,
+  groupNearbyForSpider,
+  offsetLatLng,
+  spiderOffsets,
+} from "../utils/poiLayout.js";
+import { detectLanguage } from "../services/i18n.js";
 
 try {
   maplibregl.setWorkerUrl(maplibreWorkerUrl);
@@ -109,6 +122,23 @@ function setLineSource(map, id, coordsLatLng) {
  * Navigazione MapLibre � solo API native (setBearing/setCenter).
  * CSS solo sulla freccia in nord-up (gia' collaudato).
  */
+function clearPoiMarkers(listRef) {
+  const list = listRef.current || [];
+  for (const m of list) {
+    try {
+      m.remove();
+    } catch {
+      /* ignore */
+    }
+  }
+  listRef.current = [];
+}
+
+function poiTitle(poi, lang) {
+  const meta = POI_TYPES[poi.type];
+  return poi.label || (lang === "en" ? meta?.labelEn : meta?.labelIt) || poi.type;
+}
+
 export default function NavigationMap({
   line = [],
   offRouteLine = null,
@@ -116,12 +146,17 @@ export default function NavigationMap({
   headingDeg = null,
   headingLiveRef = null,
   compassOn = false,
+  waypoints = [],
 }) {
   const containerRef = useRef(null);
   const mapRef = useRef(null);
   const markerRef = useRef(null);
   const markerRotRef = useRef(null);
   const markerOnMapRef = useRef(false);
+  const poiMarkersRef = useRef([]);
+  const openSpiderKeyRef = useRef(null);
+  const waypointsRef = useRef(waypoints);
+  waypointsRef.current = waypoints;
   const compassOnRef = useRef(compassOn);
   const headingRef = useRef(headingDeg);
   const headingLiveRefProp = useRef(headingLiveRef);
@@ -328,6 +363,8 @@ export default function NavigationMap({
       } catch {
         /* ignore */
       }
+      clearPoiMarkers(poiMarkersRef);
+      openSpiderKeyRef.current = null;
       markerRef.current = null;
       markerRotRef.current = null;
       markerOnMapRef.current = false;
@@ -382,6 +419,96 @@ export default function NavigationMap({
       offRouteLine && offRouteLine.length === 2 ? offRouteLine : null
     );
   }, [ready, offRouteLine]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!ready || !map) return undefined;
+
+    const lang = detectLanguage();
+
+    function renderPois() {
+      clearPoiMarkers(poiMarkersRef);
+      const normalized = (waypointsRef.current || []).map(normalizeWaypoint).filter(Boolean);
+      const deduped = dedupeSameTypeNearby(normalized);
+      const groups = groupNearbyForSpider(deduped);
+      const openKey = openSpiderKeyRef.current;
+
+      for (const g of groups) {
+        const key = `${g.lat.toFixed(5)},${g.lon.toFixed(5)}`;
+        const isOpen = openKey === key && g.members.length > 1;
+
+        if (g.members.length === 1 || isOpen) {
+          const members = g.members;
+          const offsets = isOpen ? spiderOffsets(members.length) : null;
+          members.forEach((poi, idx) => {
+            const off = offsets?.[idx];
+            const [lat, lon] = off
+              ? offsetLatLng(g.lat, g.lon, off.n, off.e)
+              : [poi.lat, poi.lon];
+            const el = document.createElement("div");
+            el.className = "pinewood-poi-icon";
+            el.innerHTML = poiDomBadgeHtml(poi.type);
+            el.style.cursor = "pointer";
+            el.title = poiTitle(poi, lang);
+            el.addEventListener("click", (ev) => {
+              ev.stopPropagation();
+              const popup = new maplibregl.Popup({
+                closeButton: false,
+                offset: 14,
+                className: "pinewood-poi-popup",
+              })
+                .setLngLat([lon, lat])
+                .setHTML(`<div class="pinewood-poi-popup__title">${poiTitle(poi, lang)}</div>`)
+                .addTo(map);
+              setTimeout(() => {
+                try {
+                  popup.remove();
+                } catch {
+                  /* ignore */
+                }
+              }, 2200);
+            });
+            const marker = new maplibregl.Marker({ element: el, anchor: "center" })
+              .setLngLat([lon, lat])
+              .addTo(map);
+            poiMarkersRef.current.push(marker);
+          });
+          continue;
+        }
+
+        const el = document.createElement("div");
+        el.className = "pinewood-poi-icon";
+        el.innerHTML = poiStackDomBadgeHtml(g.members.map((m) => m.type));
+        el.style.cursor = "pointer";
+        el.addEventListener("click", (ev) => {
+          ev.stopPropagation();
+          openSpiderKeyRef.current = openSpiderKeyRef.current === key ? null : key;
+          renderPois();
+        });
+        const marker = new maplibregl.Marker({ element: el, anchor: "center" })
+          .setLngLat([g.lon, g.lat])
+          .addTo(map);
+        poiMarkersRef.current.push(marker);
+      }
+    }
+
+    function onMapClick() {
+      if (!openSpiderKeyRef.current) return;
+      openSpiderKeyRef.current = null;
+      renderPois();
+    }
+
+    renderPois();
+    map.on("click", onMapClick);
+    return () => {
+      try {
+        map.off("click", onMapClick);
+      } catch {
+        /* ignore */
+      }
+      clearPoiMarkers(poiMarkersRef);
+    };
+  }, [ready, waypoints]);
 
   useEffect(() => {
     const map = mapRef.current;

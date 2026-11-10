@@ -5,15 +5,19 @@ const OVERPASS_URLS = [
   "https://overpass.kumi.systems/api/interpreter",
   "https://overpass.private.coffee/api/interpreter",
 ];
-/** Raggio (m) dal tracciato: solo POI davvero vicino alla mappa. */
-const CORRIDOR_M = 120;
+/** Raggio (m) dal tracciato: POI "di atmosfera" intorno alla mappa. */
+const CORRIDOR_M = 300;
+/** Padding bbox Overpass (~gradi) coerente col corridor. */
+const BBOX_PAD_DEG = 0.004;
+/** Stesso tipo entro questo raggio → ne teniamo uno. */
+const SAME_TYPE_DEDUPE_M = 50;
 /** Trail lunghi: pezzi da N km per non far scoppiare Overpass. */
 const CHUNK_KM = 40;
 const USER_AGENT = "PinewoodTrailApp/1.0 (poi-sync; https://pinewood.to)";
 let overpassUrlIndex = 0;
 
 /**
- * Tag OSM ? tipi Pinewood (acqua / rifugio / belvedere).
+ * Tag OSM → tipi Pinewood.
  * Solo dati reali da OpenStreetMap, mai inventati.
  */
 const OSM_QUERIES = [
@@ -25,16 +29,60 @@ const OSM_QUERIES = [
   { type: "shelter", ql: 'node["amenity"="shelter"]' },
   { type: "shelter", ql: 'node["tourism"="cabin"]' },
   { type: "viewpoint", ql: 'node["tourism"="viewpoint"]' },
+  { type: "historic", ql: 'node["historic"="archaeological_site"]' },
+  { type: "historic", ql: 'node["historic"="ruins"]' },
+  { type: "historic", ql: 'node["historic"="castle"]' },
 ];
 
 const TYPE_LABEL = {
   water: "Acqua",
   shelter: "Rifugio",
   viewpoint: "Belvedere",
+  historic: "Storico",
 };
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+function approxDistanceMeters(lat1, lon1, lat2, lon2) {
+  const midLat = ((lat1 + lat2) / 2) * (Math.PI / 180);
+  const dy = (lat2 - lat1) * 111_320;
+  const dx = (lon2 - lon1) * 111_320 * Math.cos(midLat);
+  return Math.hypot(dx, dy);
+}
+
+function labelScore(label, type) {
+  const s = String(label || "").trim();
+  if (!s) return 0;
+  const fallback = TYPE_LABEL[type] || type;
+  if (s.toLowerCase() === String(fallback).toLowerCase()) return 1;
+  return 2 + Math.min(24, s.length);
+}
+
+/** Un solo POI per tipo entro SAME_TYPE_DEDUPE_M (preferisce nome OSM). */
+function dedupeSameTypeNearby(points) {
+  const list = [...points].sort((a, b) => {
+    const da = Number(a.distance_from_start_m);
+    const db = Number(b.distance_from_start_m);
+    if (Number.isFinite(da) && Number.isFinite(db) && da !== db) return da - db;
+    return String(a.label || "").localeCompare(String(b.label || ""));
+  });
+  const kept = [];
+  for (const p of list) {
+    const clashIdx = kept.findIndex(
+      (k) => k.type === p.type && approxDistanceMeters(k.lat, k.lon, p.lat, p.lon) < SAME_TYPE_DEDUPE_M
+    );
+    if (clashIdx < 0) {
+      kept.push(p);
+      continue;
+    }
+    const prev = kept[clashIdx];
+    if (labelScore(p.label, p.type) > labelScore(prev.label, prev.type)) {
+      kept[clashIdx] = p;
+    }
+  }
+  return kept;
 }
 
 function buildOverpassQuery(south, west, north, east) {
@@ -56,11 +104,11 @@ async function fetchOverpass(query) {
           "User-Agent": USER_AGENT,
         },
         body: `data=${encodeURIComponent(query)}`,
+        signal: AbortSignal.timeout(95_000),
       });
       if (!res.ok) {
         const text = await res.text().catch(() => "");
         lastErr = new Error(`Overpass HTTP ${res.status}: ${text.slice(0, 160)}`);
-        // 429/502/504: ruota mirror e aspetta
         if (res.status === 429 || res.status === 502 || res.status === 503 || res.status === 504) {
           await sleep(2500 + attempt * 1500);
           continue;
@@ -89,6 +137,13 @@ function classifyElement(tags = {}) {
     return "shelter";
   }
   if (tags.tourism === "viewpoint") return "viewpoint";
+  if (
+    tags.historic === "archaeological_site" ||
+    tags.historic === "ruins" ||
+    tags.historic === "castle"
+  ) {
+    return "historic";
+  }
   return null;
 }
 
@@ -132,7 +187,7 @@ export async function processTrailPois(trailId, options = {}) {
   const byOsmId = new Map();
 
   for (let i = 0; i < chunks.length; i += 1) {
-    const bbox = bboxOf(chunks[i], 0.002); // ~200 m padding in gradi
+    const bbox = bboxOf(chunks[i], BBOX_PAD_DEG);
     const data = await fetchOverpass(buildOverpassQuery(bbox.south, bbox.west, bbox.north, bbox.east));
     for (const el of data?.elements || []) {
       if (el.type !== "node" || !Number.isFinite(el.lat) || !Number.isFinite(el.lon)) continue;
@@ -152,34 +207,14 @@ export async function processTrailPois(trailId, options = {}) {
   }
 
   const candidates = [...byOsmId.values()];
-  // Tieni solo quelli entro CORRIDOR_M dalla linea (PostGIS).
-  const near = [];
-  for (const c of candidates) {
-    const nearRes = await pool.query(
-      `SELECT
-          ST_DWithin(
-            t.geom::geography,
-            ST_SetSRID(ST_MakePoint($2, $3), 4326)::geography,
-            $4
-          ) AS ok,
-          ST_Length(t.geom::geography) * ST_LineLocatePoint(
-            t.geom::geometry,
-            ST_SetSRID(ST_MakePoint($2, $3), 4326)
-          ) AS dist_m
-       FROM trails t
-       WHERE t.id = $1`,
-      [trailId, c.lon, c.lat, CORRIDOR_M]
-    );
-    const row = nearRes.rows[0];
-    if (!row?.ok) continue;
-    near.push({ ...c, distance_from_start_m: Number(row.dist_m) || null });
-  }
+  const near = await filterCandidatesNearTrail(trailId, candidates);
+  const deduped = dedupeSameTypeNearby(near);
 
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
     await client.query(`DELETE FROM waypoints WHERE trail_id = $1 AND source = 'osm'`, [trailId]);
-    for (const p of near) {
+    for (const p of deduped) {
       await client.query(
         `INSERT INTO waypoints (trail_id, geom, type, label, distance_from_start_m, source, external_id)
          VALUES (
@@ -202,7 +237,51 @@ export async function processTrailPois(trailId, options = {}) {
     client.release();
   }
 
-  return { inserted: near.length, scanned: candidates.length };
+  return {
+    inserted: deduped.length,
+    scanned: candidates.length,
+    near: near.length,
+    corridor_m: CORRIDOR_M,
+  };
+}
+
+/** Filtra candidati OSM entro CORRIDOR_M con query batch (evita N round-trip). */
+async function filterCandidatesNearTrail(trailId, candidates) {
+  if (!candidates.length) return [];
+  const near = [];
+  const BATCH = 200;
+  for (let i = 0; i < candidates.length; i += BATCH) {
+    const batch = candidates.slice(i, i + BATCH);
+    const idxs = batch.map((_, j) => j);
+    const lons = batch.map((c) => c.lon);
+    const lats = batch.map((c) => c.lat);
+    const res = await pool.query(
+      `WITH pts AS (
+         SELECT * FROM unnest($2::int[], $3::float8[], $4::float8[]) AS t(idx, lon, lat)
+       )
+       SELECT
+         pts.idx,
+         ST_Length(tr.geom::geography) * ST_LineLocatePoint(
+           tr.geom::geometry,
+           ST_SetSRID(ST_MakePoint(pts.lon, pts.lat), 4326)
+         ) AS dist_m
+       FROM pts
+       CROSS JOIN trails tr
+       WHERE tr.id = $1
+         AND ST_DWithin(
+           tr.geom::geography,
+           ST_SetSRID(ST_MakePoint(pts.lon, pts.lat), 4326)::geography,
+           $5
+         )`,
+      [trailId, idxs, lons, lats, CORRIDOR_M]
+    );
+    for (const row of res.rows) {
+      const c = batch[Number(row.idx)];
+      if (!c) continue;
+      near.push({ ...c, distance_from_start_m: Number(row.dist_m) || null });
+    }
+  }
+  return near;
 }
 
 function bboxOf(coordsLonLat, padDeg) {

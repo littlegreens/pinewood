@@ -22,6 +22,7 @@ const LeafletMap = forwardRef(function LeafletMap(
     interactive = true,
     trailPath = null,
     actualPath = null,
+    waypoints = [],
     userPosition = null,
     heading = null,
     reconnectPath = null,
@@ -100,9 +101,10 @@ const LeafletMap = forwardRef(function LeafletMap(
     post({
       type: "setTrail",
       path: trailPath,
+      waypoints,
       interactive,
     });
-  }, [ready, mode, trailPath, interactive, post]);
+  }, [ready, mode, trailPath, waypoints, interactive, post]);
 
   useEffect(() => {
     if (!ready || mode !== "navigation") return;

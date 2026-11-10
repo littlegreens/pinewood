@@ -46,6 +46,7 @@ import { apiFetch } from "../services/api.js";
 import { getLastKnownLocation, requestQuickLocation } from "../services/locationTracker.js";
 import { buildElevationProfilePath } from "../utils/elevationProfilePath.js";
 import { requestCompassPermission } from "../utils/compassPermission.js";
+import WaypointMarkers from "../components/WaypointMarkers.jsx";
 import ReactQuill from "react-quill";
 import "react-quill/dist/quill.snow.css";
 import L from "leaflet";
@@ -1033,6 +1034,7 @@ export default function TrailDetail() {
                   </Marker>
                 ) : null
               )}
+              <WaypointMarkers waypoints={trail.waypoints || []} />
               {profileCursor && (
                 <Marker
                   position={profileCursor}

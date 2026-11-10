@@ -216,10 +216,10 @@ router.post("/upload", authMiddleware, upload.single("file"), async (req, res) =
       }
     );
 
-    // POI reali da OpenStreetMap lungo la traccia (una tantum, salvati in DB).
+    // POI reali OSM (acqua/rifugio/belvedere/storico) entro 300 m: job a ogni upload.
     await poiQueue.add(
       "fetch_pois",
-      { trailId },
+      { trailId, force: false },
       {
         attempts: 3,
         backoff: { type: "exponential", delay: 8000 },

@@ -507,6 +507,7 @@ export default function TrailDetailScreen({ route, navigation }) {
                 style={StyleSheet.absoluteFill}
                 mode="trail"
                 trailPath={trailPathLatLng}
+                waypoints={trail?.waypoints || []}
                 useOfflineTiles
                 interactive
               />

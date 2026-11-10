@@ -26,6 +26,14 @@ export const LEAFLET_HTML = `<!DOCTYPE html>
   );
 
   var map, clusterGroup, pathLayer, trailLayer, actualLayer, reconnectLayer, startMarker, endMarker, userMarker;
+  var poiLayer = null;
+  var openSpiderKey = null;
+  var POI_META = {
+    water: { color: "#1E88E5", label: "Acqua" },
+    shelter: { color: "#EF6C00", label: "Rifugio" },
+    viewpoint: { color: "#2E7D32", label: "Belvedere" },
+    historic: { color: "#8D6E63", label: "Storico" },
+  };
   var tileLayer = null;
   var mode = "discover";
   var interactive = true;
@@ -164,14 +172,148 @@ export const LEAFLET_HTML = `<!DOCTYPE html>
     }
   }
 
+  function clearPoiLayer() {
+    if (poiLayer) { map.removeLayer(poiLayer); poiLayer = null; }
+  }
+
   function clearTrailLayers() {
     clearPath();
+    clearPoiLayer();
+    openSpiderKey = null;
     if (trailLayer) { map.removeLayer(trailLayer); trailLayer = null; }
     if (actualLayer) { map.removeLayer(actualLayer); actualLayer = null; }
     if (reconnectLayer) { map.removeLayer(reconnectLayer); reconnectLayer = null; }
     if (startMarker) { map.removeLayer(startMarker); startMarker = null; }
     if (endMarker) { map.removeLayer(endMarker); endMarker = null; }
     if (userMarker) { map.removeLayer(userMarker); userMarker = null; }
+  }
+
+  function poiDistM(a, b) {
+    var mid = ((a.lat + b.lat) / 2) * Math.PI / 180;
+    var dy = (b.lat - a.lat) * 111320;
+    var dx = (b.lon - a.lon) * 111320 * Math.cos(mid);
+    return Math.sqrt(dx * dx + dy * dy);
+  }
+
+  function normalizePoiType(raw) {
+    var s = String(raw || "").toLowerCase();
+    if (!s) return null;
+    if (/water|acqua|fonte|spring/.test(s)) return "water";
+    if (/shelter|rifugio|bivacco|hut|cabin/.test(s)) return "shelter";
+    if (/viewpoint|belvedere|panorama|vista/.test(s)) return "viewpoint";
+    if (/historic|storico|archeolog|ruins|ruderi|castle|castello/.test(s)) return "historic";
+    return null;
+  }
+
+  function waypointLatLng(wp) {
+    var c = wp && wp.geom_geojson && wp.geom_geojson.coordinates;
+    if (c && c.length >= 2) return { lat: Number(c[1]), lon: Number(c[0]) };
+    if (wp && Number.isFinite(wp.lat) && Number.isFinite(wp.lon)) return { lat: Number(wp.lat), lon: Number(wp.lon) };
+    return null;
+  }
+
+  function dedupeSameType(list) {
+    var kept = [];
+    list.forEach(function (p) {
+      var clash = kept.find(function (k) {
+        return k.type === p.type && poiDistM(k, p) < 50;
+      });
+      if (!clash) kept.push(p);
+      else if ((p.label || "").length > (clash.label || "").length) {
+        kept[kept.indexOf(clash)] = p;
+      }
+    });
+    return kept;
+  }
+
+  function groupNearby(list) {
+    var used = {};
+    var groups = [];
+    for (var i = 0; i < list.length; i++) {
+      if (used[i]) continue;
+      var seed = list[i];
+      var members = [seed];
+      used[i] = true;
+      for (var j = i + 1; j < list.length; j++) {
+        if (used[j]) continue;
+        if (poiDistM(seed, list[j]) < 35) {
+          members.push(list[j]);
+          used[j] = true;
+        }
+      }
+      var lat = 0, lon = 0;
+      members.forEach(function (m) { lat += m.lat; lon += m.lon; });
+      groups.push({ lat: lat / members.length, lon: lon / members.length, members: members });
+    }
+    return groups;
+  }
+
+  function poiBadgeIcon(typeId, stackTypes) {
+    var meta = POI_META[typeId] || { color: "#2D4F1E" };
+    var html;
+    if (stackTypes && stackTypes.length > 1) {
+      var dots = stackTypes.map(function (tid, i) {
+        var ang = (Math.PI * 2 * i) / stackTypes.length - Math.PI / 2;
+        var x = 16 + Math.cos(ang) * 7;
+        var y = 16 + Math.sin(ang) * 7;
+        var c = (POI_META[tid] || meta).color;
+        return '<span style="position:absolute;left:' + (x - 5) + 'px;top:' + (y - 5) + 'px;width:10px;height:10px;border-radius:50%;background:' + c + ';border:1.5px solid #fff"></span>';
+      }).join("");
+      html = '<div style="width:34px;height:34px;border-radius:50%;background:#fff;box-shadow:0 2px 8px rgba(0,0,0,.22);position:relative;border:2px solid rgba(0,0,0,.08)">' + dots + '</div>';
+      return L.divIcon({ className: "pinewood-poi-icon", html: html, iconSize: [34, 34], iconAnchor: [17, 17] });
+    }
+    html = '<div style="width:30px;height:30px;border-radius:50%;background:#fff;border:2px solid ' + meta.color + ';box-shadow:0 2px 8px rgba(0,0,0,.22);display:flex;align-items:center;justify-content:center"><span style="width:10px;height:10px;border-radius:50%;background:' + meta.color + '"></span></div>';
+    return L.divIcon({ className: "pinewood-poi-icon", html: html, iconSize: [30, 30], iconAnchor: [15, 15] });
+  }
+
+  function offsetLatLng(lat, lon, n, e) {
+    return [lat + n / 111320, lon + e / (111320 * Math.cos(lat * Math.PI / 180))];
+  }
+
+  function setWaypoints(waypoints) {
+    clearPoiLayer();
+    var normalized = [];
+    (waypoints || []).forEach(function (wp) {
+      var type = normalizePoiType(wp.type) || normalizePoiType(wp.label);
+      var pos = waypointLatLng(wp);
+      if (!type || !pos || !Number.isFinite(pos.lat) || !Number.isFinite(pos.lon)) return;
+      normalized.push({
+        id: wp.id || (type + "-" + pos.lat + "-" + pos.lon),
+        type: type,
+        label: wp.label || (POI_META[type] && POI_META[type].label) || type,
+        lat: pos.lat,
+        lon: pos.lon,
+      });
+    });
+    var groups = groupNearby(dedupeSameType(normalized));
+    if (!groups.length) return;
+    poiLayer = L.layerGroup();
+    groups.forEach(function (g) {
+      var key = g.lat.toFixed(5) + "," + g.lon.toFixed(5);
+      if (g.members.length === 1 || openSpiderKey === key) {
+        g.members.forEach(function (poi, idx) {
+          var latlng = [poi.lat, poi.lon];
+          if (openSpiderKey === key && g.members.length > 1) {
+            var ang = (Math.PI * 2 * idx) / g.members.length - Math.PI / 2;
+            latlng = offsetLatLng(g.lat, g.lon, Math.cos(ang) * 18, Math.sin(ang) * 18);
+          }
+          var m = L.marker(latlng, { icon: poiBadgeIcon(poi.type) });
+          m.bindPopup('<div style="font-weight:700;text-align:center">' + poi.label + '</div>', { closeButton: false });
+          poiLayer.addLayer(m);
+        });
+      } else {
+        var stack = L.marker([g.lat, g.lon], {
+          icon: poiBadgeIcon(g.members[0].type, g.members.map(function (m) { return m.type; })),
+        });
+        stack.on("click", function (e) {
+          L.DomEvent.stopPropagation(e);
+          openSpiderKey = openSpiderKey === key ? null : key;
+          setWaypoints(waypoints);
+        });
+        poiLayer.addLayer(stack);
+      }
+    });
+    poiLayer.addTo(map);
   }
 
   function clearCluster() {
@@ -269,6 +411,7 @@ export const LEAFLET_HTML = `<!DOCTYPE html>
       }
       fitLatLngs(path, 40);
     }
+    setWaypoints(data.waypoints || []);
     setInteract(data.interactive !== false);
     setTimeout(function () { map.invalidateSize(); }, 150);
   }
