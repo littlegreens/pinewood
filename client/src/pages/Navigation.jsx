@@ -1038,7 +1038,6 @@ export default function Navigation() {
               headingDeg={userHeading}
               headingLiveRef={liveHeadingRef}
               compassOn={compassOn}
-              waypoints={waypoints}
             />
           </Box>
         </>

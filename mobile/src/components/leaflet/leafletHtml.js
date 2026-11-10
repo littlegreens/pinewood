@@ -411,7 +411,7 @@ export const LEAFLET_HTML = `<!DOCTYPE html>
       }
       fitLatLngs(path, 40);
     }
-    setWaypoints(data.waypoints || []);
+    // POI nascosti: densita' OSM troppo alta, concetto da ripensare.
     setInteract(data.interactive !== false);
     setTimeout(function () { map.invalidateSize(); }, 150);
   }
