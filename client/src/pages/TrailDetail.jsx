@@ -750,46 +750,81 @@ export default function TrailDetail() {
     });
   }
 
+  function splitPlainIntoReadableParagraphs(plain) {
+    const normalized = String(plain || "")
+      .replace(/\r/g, "")
+      .replace(/\u00a0/g, " ")
+      .replace(/[ \t]+/g, " ")
+      .trim();
+    if (!normalized) return [];
+    const byBlank = normalized
+      .split(/\n\s*\n/)
+      .map((p) => p.replace(/\n/g, " ").trim())
+      .filter(Boolean);
+    if (byBlank.length >= 2) return byBlank;
+    const one = byBlank[0] || normalized.replace(/\n/g, " ").trim();
+    // Muro unico: spezza ogni ~2 frasi.
+    const sentences = one.split(/(?<=[.!?…])\s+/).map((s) => s.trim()).filter(Boolean);
+    if (sentences.length <= 2) return [one];
+    const chunks = [];
+    for (let i = 0; i < sentences.length; i += 2) {
+      chunks.push(sentences.slice(i, i + 2).join(" "));
+    }
+    return chunks;
+  }
+
+  function htmlToPlainText(html) {
+    return String(html || "")
+      .replace(/<\s*br\s*\/?\s*>/gi, "\n")
+      .replace(/<\/\s*p\s*>/gi, "\n\n")
+      .replace(/<\/\s*div\s*>/gi, "\n\n")
+      .replace(/<\s*p[^>]*>/gi, "")
+      .replace(/<\s*div[^>]*>/gi, "")
+      .replace(/<[^>]+>/g, "")
+      .replace(/&nbsp;/gi, " ")
+      .replace(/&amp;/gi, "&")
+      .replace(/&quot;/gi, '"')
+      .replace(/&#39;/gi, "'")
+      .replace(/&lt;/gi, "<")
+      .replace(/&gt;/gi, ">")
+      .trim();
+  }
+
   function renderDescriptionContent(text) {
     if (!text) return null;
     const raw = String(text).trim();
-    if (/<[a-z][\s\S]*>/i.test(raw)) {
-      return <Box sx={{ color: "#2f2f2f" }} dangerouslySetInnerHTML={{ __html: raw }} />;
+    const descSx = {
+      color: "#2f2f2f",
+      lineHeight: 1.55,
+      fontSize: "0.98rem",
+      "& p": { margin: "0 0 1.25em 0" },
+      "& p:last-child": { marginBottom: 0 },
+      "& ul, & ol": { margin: "0 0 1.25em 0", paddingLeft: "1.35em" },
+      "& li": { marginBottom: "0.4em" },
+    };
+
+    const pCount = (raw.match(/<p[\s>]/gi) || []).length;
+    const isHtml = /<[a-z][\s\S]*>/i.test(raw);
+    // HTML già spezzato in più <p>: rende con margini. Altrimenti spezza il muro.
+    if (isHtml && pCount >= 3) {
+      return <Box className="pinewood-trail-description" sx={descSx} dangerouslySetInnerHTML={{ __html: raw }} />;
     }
-    const lines = raw.split("\n");
-    const blocks = [];
-    let i = 0;
-    while (i < lines.length) {
-      if (lines[i].startsWith("- ")) {
-        const items = [];
-        while (i < lines.length && lines[i].startsWith("- ")) {
-          items.push(lines[i].slice(2));
-          i += 1;
-        }
-        blocks.push(
-          <Box key={`ul-${i}`} component="ul" sx={{ m: 0, pl: 2.4 }}>
-            {items.map((item, idx) => (
-              <Box key={`li-${i}-${idx}`} component="li" sx={{ color: "#2f2f2f", lineHeight: 1.5 }}>
-                {renderInlineBold(item, `li-${i}-${idx}`)}
-              </Box>
-            ))}
-          </Box>
-        );
-        continue;
-      }
-      if (!lines[i].trim()) {
-        blocks.push(<Box key={`sp-${i}`} sx={{ height: 8 }} />);
-        i += 1;
-        continue;
-      }
-      blocks.push(
-        <Typography key={`p-${i}`} sx={{ color: "#2f2f2f", whiteSpace: "pre-wrap", lineHeight: 1.5 }}>
-          {renderInlineBold(lines[i], `p-${i}`)}
-        </Typography>
-      );
-      i += 1;
-    }
-    return <Stack spacing={0.4}>{blocks}</Stack>;
+
+    const plain = isHtml ? htmlToPlainText(raw) : raw;
+    const paragraphs = splitPlainIntoReadableParagraphs(plain);
+    return (
+      <Box className="pinewood-trail-description" sx={descSx}>
+        {paragraphs.map((p, i) => (
+          <Typography
+            key={`p-${i}`}
+            component="p"
+            sx={{ m: 0, mb: i === paragraphs.length - 1 ? 0 : "1.25em", color: "#2f2f2f", lineHeight: 1.55 }}
+          >
+            {renderInlineBold(p, `p-${i}`)}
+          </Typography>
+        ))}
+      </Box>
+    );
   }
 
   async function addOrUpdateParking() {

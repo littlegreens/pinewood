@@ -65,7 +65,34 @@ const MAP_EXPANDED = 480;
 
 function stripHtml(html) {
   if (!html) return "";
-  return html.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+  return String(html)
+    .replace(/<\s*br\s*\/?\s*>/gi, "\n")
+    .replace(/<\/\s*p\s*>/gi, "\n\n")
+    .replace(/<\/\s*div\s*>/gi, "\n\n")
+    .replace(/<[^>]*>/g, "")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .trim();
+}
+
+function splitDescriptionParagraphs(raw) {
+  const plain = stripHtml(raw);
+  const byBlank = plain
+    .split(/\n\s*\n/)
+    .map((p) => p.replace(/\n/g, " ").replace(/\s+/g, " ").trim())
+    .filter(Boolean);
+  if (byBlank.length >= 2) return byBlank;
+  const one = byBlank[0] || plain.replace(/\n/g, " ").replace(/\s+/g, " ").trim();
+  if (!one) return [];
+  const sentences = one.split(/(?<=[.!?…])\s+/).map((s) => s.trim()).filter(Boolean);
+  if (sentences.length <= 2) return [one];
+  const chunks = [];
+  for (let i = 0; i < sentences.length; i += 2) {
+    chunks.push(sentences.slice(i, i + 2).join(" "));
+  }
+  return chunks;
 }
 
 function detectRouteType(coords) {
@@ -587,7 +614,17 @@ export default function TrailDetailScreen({ route, navigation }) {
 
         {trail.description ? (
           <View style={styles.descSection}>
-            <Text style={styles.descriptionText}>{stripHtml(trail.description)}</Text>
+            {splitDescriptionParagraphs(trail.description).map((p, i, arr) => (
+              <Text
+                key={`desc-${i}`}
+                style={[
+                  styles.descriptionText,
+                  i < arr.length - 1 ? styles.descriptionParagraphGap : null,
+                ]}
+              >
+                {p}
+              </Text>
+            ))}
           </View>
         ) : null}
 
@@ -755,7 +792,8 @@ const styles = StyleSheet.create({
   darkVal: { fontFamily: fonts.semibold, fontSize: 14, color: "#fff", marginLeft: 4 },
 
   descSection: { paddingHorizontal: 16, paddingTop: 12, paddingBottom: 4 },
-  descriptionText: { fontFamily: fonts.regular, fontSize: 14, color: "#2f2f2f", lineHeight: 21 },
+  descriptionText: { fontFamily: fonts.regular, fontSize: 14, color: "#2f2f2f", lineHeight: 22 },
+  descriptionParagraphGap: { marginBottom: 16 },
   noDataText: { fontFamily: fonts.regular, fontSize: 14, color: colors.slateGray },
 
   elevSection: { paddingTop: 12, paddingBottom: 6 },
