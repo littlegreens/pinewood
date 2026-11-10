@@ -1,9 +1,7 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import L from "leaflet";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Box, IconButton, Typography } from "@mui/material";
 import StopIcon from "@mui/icons-material/Stop";
 import ExploreIcon from "@mui/icons-material/Explore";
-import { MapContainer, Marker, Polyline, TileLayer, useMap } from "react-leaflet";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { detectLanguage, t } from "../services/i18n.js";
 import { apiFetch } from "../services/api.js";
@@ -19,8 +17,10 @@ import {
   lockPortraitOrientation,
 } from "../utils/screenChrome.js";
 import AppBanner from "../components/AppBanner.jsx";
-import MapBearingControl from "../components/MapBearingControl.jsx";
+import NavigationMap from "../components/NavigationMap.jsx";
 import { buildElevationProfilePath as buildElevationProfilePathBase } from "../utils/elevationProfilePath.js";
+import { requestCompassPermission } from "../utils/compassPermission.js";
+import { subscribeDeviceHeading } from "../utils/deviceHeading.js";
 
 const OFF_ROUTE_VIBRATE_PULSE_MS = 900;
 const NAV_RUNTIME_STATE_KEY_PREFIX = "pinewood_nav_runtime_";
@@ -31,24 +31,19 @@ const OFF_ROUTE_ENTER_DELAY_MS = 6000;
 const OFF_ROUTE_EXIT_DELAY_MS = 3500;
 const GPS_MAX_ACCURACY_TRUST_M = 55;
 const OFF_ROUTE_ENTER_MIN_SAMPLES = 3;
-/** Aggiorna heading in React solo sopra questa soglia (°) → meno scatti sulla mappa. */
-const HEADING_PUBLISH_MIN_DELTA_DEG = 4;
-/** Posizione mappa: non ogni fix GPS. */
-const POS_PUBLISH_MIN_M = 5;
-const POS_PUBLISH_MIN_MS = 350;
-/** Sotto ~1.5 km/h: bussola magnetica; sopra: GPS bearing di movimento. */
-const COMPASS_MAX_SPEED_MS = 1.5 / 3.6;
+/** React state heading: soglia bassa; la mappa legge anche un ref live. */
+const HEADING_PUBLISH_MIN_DELTA_DEG = 0.15;
+/** Pubblica posizione GPS spesso. */
+const POS_PUBLISH_MIN_M = 0.8;
+const POS_PUBLISH_MIN_MS = 80;
+/**
+ * Sopra questa velocità preferisci GPS heading (se valido).
+ * Da fermo / passo lento: bussola magnetica (DeviceOrientation).
+ */
+const COMPASS_MAX_SPEED_MS = 2.5 / 3.6;
 
 const OFFLINE_TRAIL_KEY_PREFIX = "pw_trail_";
 const LEGACY_OFFLINE_TRAIL_KEY_PREFIX = "pinewood_offline_trail_";
-
-function MapReadyBridge({ onReady }) {
-  const map = useMap();
-  useEffect(() => {
-    onReady(map);
-  }, [map, onReady]);
-  return null;
-}
 
 function bearingDeg(a, b) {
   const φ1 = (a[0] * Math.PI) / 180;
@@ -72,52 +67,34 @@ function shortestAngleDeltaDeg(from, to) {
   return d;
 }
 
-function smoothHeadingDeg(prev, next, alpha = 0.22) {
+function smoothHeadingDeg(prev, next, alpha = 0.55) {
   if (typeof prev !== "number" || Number.isNaN(prev)) return normalizeAngleDeg(next);
   if (typeof next !== "number" || Number.isNaN(next)) return normalizeAngleDeg(prev);
   const delta = shortestAngleDeltaDeg(prev, next);
   return normalizeAngleDeg(prev + delta * alpha);
 }
 
-const USER_MARKER_ICON = L.divIcon({
-  className: "pinewood-nav-user-icon",
-  html: `<div class="pinewood-nav-user-rot" style="width:40px;height:40px;display:flex;align-items:center;justify-content:center;filter:drop-shadow(0 2px 4px rgba(0,0,0,0.4))"><svg width="30" height="30" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path fill="#e8c85c" stroke="#3a3a3a" stroke-width="1" stroke-linejoin="round" d="M12 3 L21 20 L12 15.5 L3 20 Z"/></svg></div>`,
-  iconSize: [40, 40],
-  iconAnchor: [20, 20],
-});
-
-/**
- * Nord-up: tip = heading.
- * Bussola: tip fisso in alto (0); la mappa gira sotto.
- */
-function NavigationUserMarker({ position, headingDeg, compassOn = false }) {
-  const markerRef = useRef(null);
-  useEffect(() => {
-    const el = markerRef.current?.getElement?.();
-    const rot = el?.querySelector?.(".pinewood-nav-user-rot");
-    if (!rot) return;
-    const deg = compassOn
-      ? 0
-      : typeof headingDeg === "number" && !Number.isNaN(headingDeg)
-        ? headingDeg
-        : 0;
-    rot.style.transform = `rotate(${deg}deg)`;
-  }, [headingDeg, compassOn, position]);
-  return <Marker ref={markerRef} position={position} icon={USER_MARKER_ICON} />;
-}
-
-function isLeafletMapUsable(map) {
-  return Boolean(map && typeof map.stop === "function" && map._loaded && map._mapPane);
-}
-
 export default function Navigation() {
   const { sessionId } = useParams();
   const navigate = useNavigate();
   const location = useLocation();
+  const navBoot = useMemo(() => {
+    if (location.state && (location.state.offlineTrail || location.state.initialPosition || location.state.trailId)) {
+      return location.state;
+    }
+    try {
+      const raw = sessionStorage.getItem("pinewood_nav_boot");
+      if (!raw) return location.state || null;
+      sessionStorage.removeItem("pinewood_nav_boot");
+      return JSON.parse(raw);
+    } catch {
+      return location.state || null;
+    }
+  }, [location.state]);
   const lang = useMemo(() => detectLanguage(), []);
   const [line, setLine] = useState([]);
   const [position, setPosition] = useState(() => {
-    const p = location.state?.initialPosition;
+    const p = navBoot?.initialPosition;
     if (Array.isArray(p) && p.length === 2 && Number.isFinite(p[0]) && Number.isFinite(p[1])) {
       return [p[0], p[1]];
     }
@@ -131,13 +108,15 @@ export default function Navigation() {
   const [parseStatus, setParseStatus] = useState(null);
   const [waypoints, setWaypoints] = useState([]);
   const [userDistanceM, setUserDistanceM] = useState(null);
-  const [mapInstance, setMapInstance] = useState(null);
   const [userHeading, setUserHeading] = useState(null);
   const prevPosRef = useRef(null);
   const lastHeadingRef = useRef(null);
   const publishedHeadingRef = useRef(null);
   const compassHeadingRef = useRef(null);
+  /** Aggiornato ad ogni evento bussola (anche senza setState) → mappa non si “congela”. */
+  const liveHeadingRef = useRef(null);
   const lastSpeedRef = useRef(null);
+  const lastGpsHeadingRef = useRef(null);
   const pocketTouchStartY = useRef(null);
   const lockDragOffsetYRef = useRef(0);
   const [lockDragOffsetY, setLockDragOffsetY] = useState(0);
@@ -164,21 +143,16 @@ export default function Navigation() {
   const [unlockDragging, setUnlockDragging] = useState(false);
   const pendingOffRouteSinceRef = useRef(null);
   const pendingOnRouteSinceRef = useRef(null);
-  const centeredOnStartRef = useRef(false);
-  const userPannedRef = useRef(false);
   const lastPositionPublishAtRef = useRef(0);
   const lastPublishedPosRef = useRef(null);
   const actualTrackRef = useRef([]);
   const deviationsCountRef = useRef(0);
   const [loadError, setLoadError] = useState("");
-  /** Bussola ON = freccia in basso che punta in alto, mappa track-up. OFF = nord + 2 dita. */
+  /** Bussola ON = track-up MapLibre; OFF = nord-up + rotazione 2 dita. */
   const [compassOn, setCompassOn] = useState(false);
-  const [manualBearing, setManualBearing] = useState(0);
-  const onManualBearingChange = useCallback((deg) => setManualBearing(deg), []);
-  const compassFollowAtRef = useRef(0);
   const isOfflineLocalSession = useMemo(
-    () => String(sessionId || "").startsWith("local_") || location.state?.offlineSession === true,
-    [sessionId, location.state]
+    () => String(sessionId || "").startsWith("local_") || navBoot?.offlineSession === true,
+    [sessionId, navBoot]
   );
 
   function navRuntimeStateKey() {
@@ -194,9 +168,9 @@ export default function Navigation() {
   }
 
   function getOfflineTrailPayload() {
-    const fromState = location.state?.offlineTrail;
+    const fromState = navBoot?.offlineTrail;
     if (fromState?.geom_geojson?.coordinates?.length) return fromState;
-    const trailIdFromState = location.state?.trailId;
+    const trailIdFromState = navBoot?.trailId;
     if (!trailIdFromState) return null;
     const raw =
       localStorage.getItem(offlineTrailStorageKey(trailIdFromState)) ||
@@ -214,10 +188,10 @@ export default function Navigation() {
     window.scrollTo(0, 0);
     // Play a tutto schermo app, ma URL browser resta (niente document fullscreen / pocket lock).
     exitDocumentFullscreen();
-    if (location.state?.fromTrailDetail) {
+    if (navBoot?.fromTrailDetail) {
       lockPortraitOrientation();
     }
-  }, [location.state]);
+  }, [navBoot]);
 
   function distanceMeters(a, b) {
     const toRad = (v) => (v * Math.PI) / 180;
@@ -267,20 +241,23 @@ export default function Navigation() {
     });
     let watchId;
     let cancelled = false;
-    let orientationAttached = false;
     prevPosRef.current = null;
     lastHeadingRef.current = null;
     publishedHeadingRef.current = null;
     compassHeadingRef.current = null;
+    liveHeadingRef.current = null;
     lastSpeedRef.current = null;
+    lastGpsHeadingRef.current = null;
     setUserHeading(null);
 
-    function publishHeading(h) {
+    function publishHeading(h, { asLive = true } = {}) {
       if (typeof h !== "number" || Number.isNaN(h)) {
         publishedHeadingRef.current = null;
         setUserHeading(h);
         return;
       }
+      // asLive=false: non sovrascrivere il ref fresco della bussola con uno smooth ritardato.
+      if (asLive) liveHeadingRef.current = h;
       const pub = publishedHeadingRef.current;
       if (pub == null || Math.abs(shortestAngleDeltaDeg(pub, h)) >= HEADING_PUBLISH_MIN_DELTA_DEG) {
         publishedHeadingRef.current = h;
@@ -288,40 +265,28 @@ export default function Navigation() {
       }
     }
 
-    function onDeviceOrientation(ev) {
-      let compass = null;
-      if (typeof ev.webkitCompassHeading === "number" && !Number.isNaN(ev.webkitCompassHeading)) {
-        compass = ev.webkitCompassHeading;
-      } else if (typeof ev.alpha === "number" && !Number.isNaN(ev.alpha)) {
-        compass = (360 - ev.alpha + 360) % 360;
-      }
-      if (compass == null) return;
+    function applyCompassHeading(compass) {
+      if (typeof compass !== "number" || Number.isNaN(compass)) return;
       compassHeadingRef.current = compass;
+
       const speed = lastSpeedRef.current;
       const movingFast =
         typeof speed === "number" && !Number.isNaN(speed) && speed >= COMPASS_MAX_SPEED_MS;
-      if (movingFast) return;
-      const smoothed = smoothHeadingDeg(lastHeadingRef.current, compass);
+      const gpsH = lastGpsHeadingRef.current;
+      const gpsHeadingOk = typeof gpsH === "number" && !Number.isNaN(gpsH) && gpsH >= 0;
+      // In corsa con heading GPS valido: la freccia segue il movimento, non la bussola.
+      if (movingFast && gpsHeadingOk) return;
+
+      // Low-pass prima del live ref: niente heading grezzo → setBearing a scatti.
+      const smoothed = smoothHeadingDeg(lastHeadingRef.current, compass, 0.28);
       lastHeadingRef.current = smoothed;
-      publishHeading(smoothed);
+      publishHeading(smoothed, { asLive: true });
     }
 
-    async function attachCompass() {
-      try {
-        const DOE = window.DeviceOrientationEvent;
-        if (DOE && typeof DOE.requestPermission === "function") {
-          const perm = await DOE.requestPermission();
-          if (perm !== "granted") return;
-        }
-      } catch {
-        return;
-      }
-      if (cancelled || orientationAttached) return;
-      const absEvt = "ondeviceorientationabsolute" in window ? "deviceorientationabsolute" : "deviceorientation";
-      window.addEventListener(absEvt, onDeviceOrientation, true);
-      orientationAttached = absEvt;
-    }
-    void attachCompass();
+    const unsubHeading = subscribeDeviceHeading((compass) => {
+      if (cancelled) return;
+      applyCompassHeading(compass);
+    });
 
     async function load() {
       if (cancelled) return;
@@ -329,7 +294,7 @@ export default function Navigation() {
         const offlineData = getOfflineTrailPayload();
         const coords = offlineData?.geom_geojson?.coordinates || [];
         if (!coords.length) {
-          const target = location.state?.trailId ? `/app/trails/${location.state.trailId}` : "/app";
+          const target = navBoot?.trailId ? `/app/trails/${navBoot.trailId}` : "/app";
           if (cancelled) return;
           navigate(target, { replace: true });
           return;
@@ -374,43 +339,40 @@ export default function Navigation() {
             typeof p.coords.accuracy === "number" && !Number.isNaN(p.coords.accuracy)
               ? p.coords.accuracy
               : null;
-          let h = null;
           const speed = p.coords.speed;
           lastSpeedRef.current =
             typeof speed === "number" && !Number.isNaN(speed) ? speed : null;
           const movingFast =
             typeof speed === "number" && !Number.isNaN(speed) && speed >= COMPASS_MAX_SPEED_MS;
-          if (movingFast) {
-            if (
-              typeof p.coords.heading === "number" &&
-              !Number.isNaN(p.coords.heading) &&
-              p.coords.heading >= 0
-            ) {
-              h = p.coords.heading;
-            } else if (prevPosRef.current) {
-              const moved = distanceMeters(prevPosRef.current, pos);
-              if (moved > 4) h = bearingDeg(prevPosRef.current, pos);
-            }
-          } else if (typeof compassHeadingRef.current === "number") {
-            h = compassHeadingRef.current;
-          } else if (
+
+          let gpsH = null;
+          if (
             typeof p.coords.heading === "number" &&
             !Number.isNaN(p.coords.heading) &&
-            p.coords.heading >= 0 &&
-            (speed == null || speed > 0.35)
+            p.coords.heading >= 0
           ) {
-            h = p.coords.heading;
+            gpsH = p.coords.heading;
+            lastGpsHeadingRef.current = gpsH;
           } else if (prevPosRef.current) {
             const moved = distanceMeters(prevPosRef.current, pos);
-            if (moved > 4) h = bearingDeg(prevPosRef.current, pos);
+            if (moved > 4) {
+              gpsH = bearingDeg(prevPosRef.current, pos);
+              lastGpsHeadingRef.current = gpsH;
+            }
           }
-          if (h == null) {
-            h = lastHeadingRef.current;
-          } else {
-            const smoothed = smoothHeadingDeg(lastHeadingRef.current, h);
+
+          // Da fermo: non pubblicare heading dal GPS (congela la freccia).
+          // In movimento veloce: GPS se valido, altrimenti bussola.
+          if (movingFast && typeof gpsH === "number") {
+            const smoothed = smoothHeadingDeg(lastHeadingRef.current, gpsH);
             lastHeadingRef.current = smoothed;
-            h = smoothed;
+            publishHeading(smoothed);
+          } else if (typeof compassHeadingRef.current === "number") {
+            // La bussola aggiorna già via DeviceOrientation; qui non sovrascrivere.
+          } else if (typeof lastHeadingRef.current === "number") {
+            publishHeading(lastHeadingRef.current);
           }
+
           prevPosRef.current = pos;
           const nowTs = Date.now();
           const movedEnough =
@@ -421,24 +383,20 @@ export default function Navigation() {
             lastPublishedPosRef.current = pos;
             setPosition(pos);
           }
-          publishHeading(h);
         },
         () => {},
-        { enableHighAccuracy: true, maximumAge: 1000, timeout: 12_000 }
+        { enableHighAccuracy: true, maximumAge: 0, timeout: 12_000 }
       );
     }
     load();
     return () => {
       cancelled = true;
       unsub?.();
+      unsubHeading?.();
       if (watchId != null) navigator.geolocation.clearWatch(watchId);
-      if (orientationAttached) {
-        window.removeEventListener(orientationAttached, onDeviceOrientation, true);
-      }
     };
-  }, [sessionId, navigate, isOfflineLocalSession, location.state]);
+  }, [sessionId, navigate, isOfflineLocalSession, navBoot]);
 
-  const center = line[0] || [41.9, 12.5];
   const cumulativeDistances = useMemo(() => {
     if (line.length === 0) return [0];
     const out = [0];
@@ -733,80 +691,6 @@ export default function Navigation() {
     };
   }, [pocketMode]);
 
-  // Camera iniziale una sola volta per traccia: setView senza nascondere la polyline.
-  useEffect(() => {
-    if (!mapInstance || line.length === 0) return;
-    if (!isLeafletMapUsable(mapInstance)) return;
-    centeredOnStartRef.current = false;
-    userPannedRef.current = false;
-
-    mapInstance.stop();
-    if (position) {
-      mapInstance.setView(position, Math.max(mapInstance.getZoom() || 14, 15), { animate: false });
-      centeredOnStartRef.current = true;
-    } else {
-      mapInstance.fitBounds(line, { padding: [18, 18], animate: false });
-    }
-
-    const markUserPan = () => {
-      userPannedRef.current = true;
-    };
-    // Solo drag interrompe il follow bussola; lo zoom resta libero senza “sbloccare” la freccia.
-    mapInstance.on("dragstart", markUserPan);
-    return () => {
-      mapInstance.off("dragstart", markUserPan);
-    };
-    // Solo quando cambia la geometria della traccia, non a ogni fix GPS.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mapInstance, line]);
-
-  useEffect(() => {
-    if (!mapInstance || startGate !== "ready" || !position) return;
-    if (!isLeafletMapUsable(mapInstance)) return;
-    if (centeredOnStartRef.current) return;
-    mapInstance.setView(position, Math.max(mapInstance.getZoom() || 14, 15), { animate: false });
-    centeredOnStartRef.current = true;
-  }, [mapInstance, startGate, position]);
-
-  /** Bussola: GPS al centro Leaflet, poi panBy in alto → freccia in basso sullo schermo. */
-  function placeCompassCamera(map, latlng, zoom) {
-    const z = zoom ?? Math.max(map.getZoom() || 14, 16);
-    map.setView(latlng, z, { animate: false });
-    const h = map.getSize()?.y || 0;
-    if (h > 0) {
-      // ~28% verso il basso dello schermo (indipendente dall’heading / rotazione CSS).
-      map.panBy([0, -Math.round(h * 0.28)], { animate: false });
-    }
-  }
-
-  // Accensione bussola: freccia in basso, punta in alto.
-  useEffect(() => {
-    if (!compassOn || !mapInstance || !position) return;
-    if (!isLeafletMapUsable(mapInstance)) return;
-    userPannedRef.current = false;
-    setManualBearing(0);
-    try {
-      placeCompassCamera(mapInstance, position);
-    } catch {
-      /* ignore */
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [compassOn]);
-
-  // Bussola: se non hai trascinato a mano, tieni la freccia in basso mentre cammini.
-  useEffect(() => {
-    if (!compassOn || !mapInstance || startGate !== "ready" || !position) return;
-    if (!isLeafletMapUsable(mapInstance)) return;
-    if (userPannedRef.current) return;
-    const now = Date.now();
-    if (now - (compassFollowAtRef.current || 0) < 800) return;
-    compassFollowAtRef.current = now;
-    try {
-      placeCompassCamera(mapInstance, position, mapInstance.getZoom());
-    } catch {
-      /* ignore */
-    }
-  }, [compassOn, mapInstance, startGate, position]);
   useEffect(() => {
     actualTrackRef.current = actualTrack;
   }, [actualTrack]);
@@ -814,19 +698,6 @@ export default function Navigation() {
   useEffect(() => {
     deviationsCountRef.current = deviationsCount;
   }, [deviationsCount]);
-
-  useEffect(() => {
-    if (startGate !== "ready") return;
-    if (!position) return;
-    setActualTrack((prev) => {
-      if (prev.length === 0) return [position];
-      const last = prev[prev.length - 1];
-      if (distanceMeters(last, position) < 8) return prev;
-      // Cap memoria: tieni ultimi ~2500 punti (~20 km a 8 m)
-      const next = [...prev, position];
-      return next.length > 2500 ? next.slice(next.length - 2500) : next;
-    });
-  }, [position, startGate]);
 
   useEffect(() => {
     if (startGate !== "ready") {
@@ -853,7 +724,7 @@ export default function Navigation() {
   }, [sessionId, startGate, isOfflineLocalSession]);
 
   function buildExitNavigationTarget() {
-    const st = location.state;
+    const st = navBoot;
     const rawOrigin = st?.backTo;
     const trail = st?.trailId;
     const backToOrigin =
@@ -884,29 +755,6 @@ export default function Navigation() {
     sessionStorage.removeItem(navRuntimeStateKey());
     const target = buildExitNavigationTarget();
     navigate(target.pathname, { replace: true, state: target.state });
-  }
-
-  async function centerOnUser() {
-    if (!mapInstance) return;
-    if (!isLeafletMapUsable(mapInstance)) return;
-    const target = position || (await requestQuickLocation({ timeoutMs: 3500 }));
-    if (!target) return;
-    userPannedRef.current = false;
-    mapInstance.stop();
-    mapInstance.setView(target, Math.max(mapInstance.getZoom(), 15), { animate: false });
-  }
-
-  function onMapClickZoom(latlng) {
-    if (!mapInstance || !latlng) return;
-    if (!isLeafletMapUsable(mapInstance)) return;
-    // Zoom volutamente meno aggressivo: un livello in meno rispetto al comportamento precedente.
-    const targetZoom = Math.min(17, Math.max(13, mapInstance.getZoom() + 1));
-    mapInstance.stop();
-    mapInstance.flyTo([latlng.lat, latlng.lng], targetZoom, {
-      animate: true,
-      duration: 0.55,
-      easeLinearity: 0.2,
-    });
   }
 
   function buildElevationPath(profile, width, height, pad) {
@@ -1113,138 +961,81 @@ export default function Navigation() {
               position: "relative",
               minHeight: 0,
               touchAction: "none",
-              "& .leaflet-container": { touchAction: "none", width: "100%", height: "100%" },
+              "& .pinewood-nav-maplibre": {
+                touchAction: "none",
+                width: "100%",
+                height: "100%",
+                background: "#d0d5d0",
+              },
+              "& .maplibregl-map": { width: "100%", height: "100%" },
+              "& .maplibregl-canvas": { outline: "none" },
             }}
           >
             {startGate === "ready" && (
-              <Box
-                sx={{
-                  position: "absolute",
-                  top: 12,
-                  right: 12,
-                  zIndex: 1400,
-                  pointerEvents: "none",
-                }}
-              >
+              <>
                 <IconButton
-                  onClick={() => setCompassOn((v) => !v)}
-                  aria-label={compassOn ? "Bussola attiva" : "Bussola spenta"}
-                  aria-pressed={compassOn}
+                  onClick={() => {
+                    void requestCompassPermission();
+                    setCompassOn((v) => !v);
+                  }}
+                  aria-label="Bussola"
                   sx={{
-                    pointerEvents: "auto",
+                    position: "absolute",
+                    top: 12,
+                    right: 12,
+                    zIndex: 1400,
                     width: 44,
                     height: 44,
-                    bgcolor: compassOn ? "#1E88E5" : "rgba(255,255,255,0.94)",
-                    color: compassOn ? "#fff" : "#111",
-                    border: "1px solid rgba(0,0,0,0.08)",
-                    boxShadow: "0 2px 10px rgba(0,0,0,0.14)",
-                    "&:hover": { bgcolor: compassOn ? "#1976D2" : "#fff" },
+                    bgcolor: compassOn ? "#2F6B3A" : "#ffffff",
+                    color: compassOn ? "#ffffff" : "#102115",
+                    border: compassOn ? "1px solid #245530" : "1px solid rgba(16,33,21,0.18)",
+                    boxShadow: "0 2px 10px rgba(0,0,0,0.22)",
+                    "&:hover": { bgcolor: compassOn ? "#265830" : "#f3f3f3" },
                   }}
                 >
-                  <ExploreIcon sx={{ fontSize: 26 }} />
+                  <ExploreIcon sx={{ fontSize: 24 }} />
                 </IconButton>
-              </Box>
-            )}
-
-            {startGate === "ready" && (
-              <Box
-                sx={{
-                  position: "absolute",
-                  left: 0,
-                  right: 0,
-                  bottom: "max(14px, env(safe-area-inset-bottom))",
-                  zIndex: 1400,
-                  display: "flex",
-                  justifyContent: "center",
-                  pointerEvents: "none",
-                }}
-              >
-                <IconButton
-                  onClick={finishSession}
-                  aria-label={t(lang, "completeTrail")}
+                <Box
                   sx={{
-                    pointerEvents: "auto",
-                    width: 58,
-                    height: 58,
-                    borderRadius: "50%",
-                    bgcolor: "#c62828",
-                    color: "#fff",
-                    border: "none",
-                    boxShadow: "0 4px 16px rgba(0,0,0,0.28)",
-                    "&:hover": { bgcolor: "#a31515" },
+                    position: "absolute",
+                    left: 0,
+                    right: 0,
+                    bottom: "max(14px, env(safe-area-inset-bottom))",
+                    zIndex: 1400,
+                    display: "flex",
+                    justifyContent: "center",
+                    pointerEvents: "none",
                   }}
                 >
-                  <StopIcon sx={{ fontSize: 30, color: "#fff" }} />
-                </IconButton>
-              </Box>
+                  <IconButton
+                    onClick={finishSession}
+                    aria-label={t(lang, "completeTrail")}
+                    sx={{
+                      pointerEvents: "auto",
+                      width: 58,
+                      height: 58,
+                      borderRadius: "50%",
+                      bgcolor: "#c62828",
+                      color: "#fff",
+                      border: "none",
+                      boxShadow: "0 4px 16px rgba(0,0,0,0.28)",
+                      "&:hover": { bgcolor: "#a31515" },
+                    }}
+                  >
+                    <StopIcon sx={{ fontSize: 30, color: "#fff" }} />
+                  </IconButton>
+                </Box>
+              </>
             )}
 
-            <MapContainer
-              center={center}
-              zoom={14}
-              style={{ width: "100%", height: "100%" }}
-              zoomControl={false}
-              dragging
-              touchZoom
-              doubleClickZoom
-              scrollWheelZoom
-              boxZoom={false}
-              keyboard={false}
-            >
-              <MapReadyBridge onReady={setMapInstance} />
-              <MapBearingControl
-                compassOn={compassOn}
-                headingDeg={userHeading}
-                manualBearing={manualBearing}
-                onManualBearingChange={onManualBearingChange}
-              />
-              <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" attribution="" />
-              {line.length > 1 && (
-                <Polyline
-                  positions={line}
-                  pathOptions={{
-                    color: "#2D4F1E",
-                    weight: 5,
-                    opacity: 1,
-                    lineCap: "round",
-                    lineJoin: "round",
-                    className: "pinewood-fixed-stroke",
-                  }}
-                />
-              )}
-              {actualTrack.length > 1 && (
-                <Polyline
-                  positions={actualTrack}
-                  pathOptions={{
-                    color: "#c9a84c",
-                    weight: 3,
-                    opacity: 0.9,
-                    lineCap: "round",
-                    lineJoin: "round",
-                    className: "pinewood-fixed-stroke",
-                  }}
-                />
-              )}
-              {offRouteReconnectLine && (
-                <Polyline
-                  positions={offRouteReconnectLine}
-                  pathOptions={{
-                    color: "#ff6b00",
-                    weight: 3,
-                    opacity: 0.9,
-                    dashArray: "10 8",
-                    className: "pinewood-fixed-stroke",
-                  }}
-                />
-              )}
-              {position && (
-                <NavigationUserMarker
-                  position={position}
-                  headingDeg={userHeading}
-                  compassOn={compassOn}
-                />
-              )}
-            </MapContainer>
+            <NavigationMap
+              line={line}
+              offRouteLine={offRouteReconnectLine}
+              position={position}
+              headingDeg={userHeading}
+              headingLiveRef={liveHeadingRef}
+              compassOn={compassOn}
+            />
           </Box>
         </>
 
