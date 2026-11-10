@@ -30,13 +30,15 @@ const OSM_STYLE = {
 const USER_MARKER_HTML = `<div class="pinewood-nav-user-rot" style="width:40px;height:40px;display:flex;align-items:center;justify-content:center;will-change:transform;filter:drop-shadow(0 2px 4px rgba(0,0,0,0.4))"><svg width="30" height="30" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path fill="#e8c85c" stroke="#3a3a3a" stroke-width="1" stroke-linejoin="round" d="M12 3 L21 20 L12 15.5 L3 20 Z"/></svg></div>`;
 
 const FOLLOW_RESUME_MS = 1400;
-/** Smoothing bearing nativo (niente CSS sulla mappa): tau più lungo = meno jitter. */
-const COMPASS_BEARING_TAU_MS = 220;
+/** Smoothing bearing nativo: tau basso = gira quasi in tempo reale. */
+const COMPASS_BEARING_TAU_MS = 70;
 const MARKER_HEADING_TAU_MS = 70;
 /** Non chiamare setBearing per micro-delta (rumore sensore). */
-const COMPASS_BEARING_DEADBAND_DEG = 0.35;
-/** Cap velocità angolare (°/s) verso il target. */
-const COMPASS_MAX_BEARING_RATE_DEG_S = 140;
+const COMPASS_BEARING_DEADBAND_DEG = 0.25;
+/** Cap base (°/s); con delta grandi sale (girata veloce = inseguimento veloce). */
+const COMPASS_MAX_BEARING_RATE_DEG_S = 420;
+const COMPASS_FAST_TURN_DELTA_DEG = 25;
+const COMPASS_FAST_TURN_RATE_DEG_S = 720;
 const POS_FOLLOW = 0.18;
 const COMPASS_RECENTER_MIN_M = 6;
 const COMPASS_RECENTER_MIN_MS = 450;
@@ -467,11 +469,16 @@ export default function NavigationMap({
         if (d.heading == null) {
           d.heading = targetH;
         } else if (compass) {
-          // Rate-limit solo in track-up: evita scatti su salti di heading.
-          const maxStep = (COMPASS_MAX_BEARING_RATE_DEG_S * dt) / 1000;
+          // Rate-limit adattivo: micro-rumore filtrato, girate ampie quasi immediate.
           const delta = shortestAngleDeltaDeg(d.heading, targetH);
+          const absDelta = Math.abs(delta);
+          const rateDegS =
+            absDelta >= COMPASS_FAST_TURN_DELTA_DEG
+              ? COMPASS_FAST_TURN_RATE_DEG_S
+              : COMPASS_MAX_BEARING_RATE_DEG_S;
+          const maxStep = (rateDegS * dt) / 1000;
           const limited =
-            Math.abs(delta) <= maxStep
+            absDelta <= maxStep
               ? targetH
               : normalizeAngleDeg(d.heading + Math.sign(delta) * maxStep);
           d.heading = lerpAngleDeg(d.heading, limited, alpha);

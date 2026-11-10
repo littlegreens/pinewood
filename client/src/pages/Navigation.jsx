@@ -277,8 +277,8 @@ export default function Navigation() {
       // In corsa con heading GPS valido: la freccia segue il movimento, non la bussola.
       if (movingFast && gpsHeadingOk) return;
 
-      // Low-pass prima del live ref: niente heading grezzo → setBearing a scatti.
-      const smoothed = smoothHeadingDeg(lastHeadingRef.current, compass, 0.28);
+      // Low-pass leggero: reattivo alle girate, ancora un filo anti-jitter.
+      const smoothed = smoothHeadingDeg(lastHeadingRef.current, compass, 0.62);
       lastHeadingRef.current = smoothed;
       publishHeading(smoothed, { asLive: true });
     }
