@@ -31,12 +31,12 @@ const USER_MARKER_HTML = `<div class="pinewood-nav-user-rot" style="width:40px;h
 
 const FOLLOW_RESUME_MS = 1400;
 /** Smoothing bearing nativo (niente CSS sulla mappa): tau più lungo = meno jitter. */
-const COMPASS_BEARING_TAU_MS = 300;
+const COMPASS_BEARING_TAU_MS = 220;
 const MARKER_HEADING_TAU_MS = 70;
 /** Non chiamare setBearing per micro-delta (rumore sensore). */
-const COMPASS_BEARING_DEADBAND_DEG = 0.65;
+const COMPASS_BEARING_DEADBAND_DEG = 0.35;
 /** Cap velocità angolare (°/s) verso il target. */
-const COMPASS_MAX_BEARING_RATE_DEG_S = 110;
+const COMPASS_MAX_BEARING_RATE_DEG_S = 140;
 const POS_FOLLOW = 0.18;
 const COMPASS_RECENTER_MIN_M = 6;
 const COMPASS_RECENTER_MIN_MS = 450;
@@ -127,6 +127,8 @@ export default function NavigationMap({
   const fittedTrailKeyRef = useRef("");
   const followPausedUntilRef = useRef(0);
   const userZoomingRef = useRef(false);
+  /** Evita che setBearing/jumpTo nostri sparino rotatestart e blocchino il follow. */
+  const applyingCameraRef = useRef(false);
   const displayRef = useRef({
     lng: null,
     lat: null,
@@ -143,6 +145,15 @@ export default function NavigationMap({
   headingLiveRefProp.current = headingLiveRef;
   positionRef.current = position;
 
+  const runCamera = (fn) => {
+    applyingCameraRef.current = true;
+    try {
+      fn();
+    } finally {
+      applyingCameraRef.current = false;
+    }
+  };
+
   useEffect(() => {
     const el = containerRef.current;
     if (!el || mapRef.current) return undefined;
@@ -158,17 +169,28 @@ export default function NavigationMap({
     };
 
     const onInteractStart = () => {
+      if (applyingCameraRef.current) return;
       userZoomingRef.current = true;
       pauseFollow(FOLLOW_RESUME_MS);
       if (interactTimer) clearTimeout(interactTimer);
     };
     const onInteractEnd = () => {
+      if (applyingCameraRef.current) return;
       userZoomingRef.current = false;
       pauseFollow(FOLLOW_RESUME_MS);
       if (interactTimer) clearTimeout(interactTimer);
       interactTimer = setTimeout(() => {
         userZoomingRef.current = false;
       }, FOLLOW_RESUME_MS);
+    };
+    // In bussola la rotazione è nostra: non trattarla come gesto utente.
+    const onRotateStart = () => {
+      if (applyingCameraRef.current || compassOnRef.current) return;
+      onInteractStart();
+    };
+    const onRotateEnd = () => {
+      if (applyingCameraRef.current || compassOnRef.current) return;
+      onInteractEnd();
     };
 
     try {
@@ -209,10 +231,10 @@ export default function NavigationMap({
 
       map.on("dragstart", onInteractStart);
       map.on("zoomstart", onInteractStart);
-      map.on("rotatestart", onInteractStart);
+      map.on("rotatestart", onRotateStart);
       map.on("dragend", onInteractEnd);
       map.on("zoomend", onInteractEnd);
-      map.on("rotateend", onInteractEnd);
+      map.on("rotateend", onRotateEnd);
 
       map.on("error", (e) => {
         if (cancelled) return;
@@ -292,10 +314,10 @@ export default function NavigationMap({
       try {
         map.off("dragstart", onInteractStart);
         map.off("zoomstart", onInteractStart);
-        map.off("rotatestart", onInteractStart);
+        map.off("rotatestart", onRotateStart);
         map.off("dragend", onInteractEnd);
         map.off("zoomend", onInteractEnd);
-        map.off("rotateend", onInteractEnd);
+        map.off("rotateend", onRotateEnd);
       } catch {
         /* ignore */
       }
@@ -367,6 +389,7 @@ export default function NavigationMap({
         map.dragRotate.disable();
         map.touchZoomRotate.disableRotation();
         followPausedUntilRef.current = 0;
+        userZoomingRef.current = false;
         const ll = toLngLat(positionRef.current);
         const live = headingLiveRefProp.current?.current;
         const h =
@@ -375,17 +398,23 @@ export default function NavigationMap({
             : typeof headingRef.current === "number" && !Number.isNaN(headingRef.current)
               ? headingRef.current
               : map.getBearing();
-        map.stop();
-        if (ll) map.jumpTo({ center: ll, bearing: h });
-        else map.setBearing(h);
+        runCamera(() => {
+          map.stop();
+          if (ll) map.jumpTo({ center: ll, bearing: h });
+          else map.setBearing(h);
+        });
         displayRef.current.heading = h;
         displayRef.current.markerHeading = h;
         lastRecenterAtRef.current = Date.now();
       } else {
         map.dragRotate.enable();
         map.touchZoomRotate.enableRotation();
-        map.stop();
-        map.easeTo({ bearing: 0, duration: 280, essential: true });
+        followPausedUntilRef.current = 0;
+        userZoomingRef.current = false;
+        runCamera(() => {
+          map.stop();
+          map.easeTo({ bearing: 0, duration: 280, essential: true });
+        });
         displayRef.current.heading = 0;
       }
     } catch {
@@ -453,24 +482,13 @@ export default function NavigationMap({
         else d.markerHeading = lerpAngleDeg(d.markerHeading, targetH, alpha);
       }
 
-      if (d.lng == null || d.lat == null) return;
-      const displayLl = [d.lng, d.lat];
+      const rotEl = markerRotRef.current;
+      const followOk =
+        compass && !userZoomingRef.current && Date.now() >= followPausedUntilRef.current;
 
+      // Bearing anche senza fix GPS fresco: fuori percorso / segnale scarso non deve bloccare.
       try {
-        if (!markerOnMapRef.current) {
-          marker.setLngLat(displayLl);
-          marker.addTo(map);
-          markerOnMapRef.current = true;
-        } else {
-          marker.setLngLat(displayLl);
-        }
-
-        const rotEl = markerRotRef.current;
-        const followOk =
-          compass && !userZoomingRef.current && Date.now() >= followPausedUntilRef.current;
-
         if (compass) {
-          // Track-up nativo: tip fissa in alto, ruota la mappa con jumpTo/setBearing.
           marker.setRotationAlignment("viewport");
           marker.setRotation(0);
           if (rotEl) rotEl.style.transform = "rotate(0deg)";
@@ -480,23 +498,28 @@ export default function NavigationMap({
             const bearingDelta = Math.abs(shortestAngleDeltaDeg(curB, d.heading));
             const needBearing = bearingDelta >= COMPASS_BEARING_DEADBAND_DEG;
 
-            const nowMs = Date.now();
-            let needCenter = false;
-            if (nowMs - lastRecenterAtRef.current >= COMPASS_RECENTER_MIN_MS) {
-              const c = map.getCenter();
-              const moved = approxDistanceMeters(c.lng, c.lat, displayLl[0], displayLl[1]);
-              if (moved >= COMPASS_RECENTER_MIN_M) {
-                needCenter = true;
-                lastRecenterAtRef.current = nowMs;
+            if (d.lng != null && d.lat != null) {
+              const displayLl = [d.lng, d.lat];
+              const nowMs = Date.now();
+              let needCenter = false;
+              if (nowMs - lastRecenterAtRef.current >= COMPASS_RECENTER_MIN_MS) {
+                const c = map.getCenter();
+                const moved = approxDistanceMeters(c.lng, c.lat, displayLl[0], displayLl[1]);
+                if (moved >= COMPASS_RECENTER_MIN_M) {
+                  needCenter = true;
+                  lastRecenterAtRef.current = nowMs;
+                }
               }
-            }
 
-            if (needCenter && needBearing) {
-              map.jumpTo({ center: displayLl, bearing: d.heading });
-            } else if (needCenter) {
-              map.setCenter(displayLl);
+              if (needCenter && needBearing) {
+                runCamera(() => map.jumpTo({ center: displayLl, bearing: d.heading }));
+              } else if (needCenter) {
+                runCamera(() => map.setCenter(displayLl));
+              } else if (needBearing) {
+                runCamera(() => map.setBearing(d.heading));
+              }
             } else if (needBearing) {
-              map.setBearing(d.heading);
+              runCamera(() => map.setBearing(d.heading));
             }
           }
         } else {
@@ -506,6 +529,17 @@ export default function NavigationMap({
           const mh = d.markerHeading ?? 0;
           const screenRot = normalizeAngleDeg(mh - map.getBearing());
           if (rotEl) rotEl.style.transform = `rotate(${screenRot}deg)`;
+        }
+
+        if (d.lng != null && d.lat != null) {
+          const displayLl = [d.lng, d.lat];
+          if (!markerOnMapRef.current) {
+            marker.setLngLat(displayLl);
+            marker.addTo(map);
+            markerOnMapRef.current = true;
+          } else {
+            marker.setLngLat(displayLl);
+          }
         }
       } catch {
         /* ignore */

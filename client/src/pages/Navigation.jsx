@@ -975,8 +975,11 @@ export default function Navigation() {
               <>
                 <IconButton
                   onClick={() => {
-                    void requestCompassPermission();
-                    setCompassOn((v) => !v);
+                    void (async () => {
+                      // iOS: permesso nel gesto utente, poi attiva track-up.
+                      if (!compassOn) await requestCompassPermission();
+                      setCompassOn((v) => !v);
+                    })();
                   }}
                   aria-label="Bussola"
                   sx={{
